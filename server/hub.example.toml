@@ -1,0 +1,15 @@
+# Lanes hub: the machines to show, in this order (the order fixes each machine's color).
+# A machine without `ssh` is the one the hub runs on. For the others, the hub runs `lanes agent` over SSH, so
+# `ssh HOST` must work without a password prompt from the hub's user (keys, BatchMode).
+
+# port = 8792            # the page and data, on 127.0.0.1 only unless you set listen
+# listen = "127.0.0.1"   # keep it local and reach it through an SSH tunnel; a LAN address shows it to your network
+
+[[machines]]
+name = "build-01"
+
+[[machines]]
+name = "build-02"
+ssh = "build-02"                         # anything `ssh HOST` accepts: a host, user@host, or a ~/.ssh/config name
+# command = "~/.local/bin/lanes agent"   # where lanes is installed there (this is the default)
+# ssh_options = "-p 2222"

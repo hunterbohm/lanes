@@ -1,0 +1,12 @@
+[Unit]
+Description=Lanes hub: CI on all your machines, served on 127.0.0.1:8792
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/lanes hub
+Restart=always
+RestartSec=10
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target

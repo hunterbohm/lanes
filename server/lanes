@@ -1,0 +1,344 @@
+#!/usr/bin/env python3
+"""lanes: see what every GitHub Actions runner on every one of your machines is doing, from one place.
+
+  lanes agent              print this machine's CI as JSON: the job each runner service is running, the jobs that
+                           finished in the last 6 hours, load, memory, and whatever the sources in
+                           ~/.config/lanes/agent.toml add.
+  lanes hub [CONFIG]       every 5 seconds, run the agent on each machine in CONFIG (default ~/.config/lanes/hub.toml;
+                           over SSH for remote ones) and serve the charts page at http://127.0.0.1:8792/ and the data
+                           at /status.json. The Lanes menu bar app shows the page.
+  lanes demo               serve the charts page with made-up data, to try the app without a fleet.
+
+It only reads: it never starts, stops or changes a runner. Python 3.11+, no packages to install.
+"""
+from __future__ import annotations
+
+import calendar
+import json
+import os
+import random
+import re
+import shlex
+import socket
+import subprocess
+import sys
+import threading
+import time
+try:
+    import tomllib
+except ImportError:      # Python before 3.11: only `lanes demo` works
+    tomllib = None
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+VERSION = "0.1.0"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "lanes"
+STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "lanes"
+PAGE_PLACES = (Path(__file__).resolve().parent / "lanes.html", Path.home() / ".local/share/lanes/lanes.html")
+RECENT_S = 6 * 3600              # finished jobs are kept this long
+REFRESH_S = 5
+SAMPLE_EVERY_S = 30              # load samples for the sparklines, kept 2 hours
+SAMPLES_KEPT = 240
+RESULTS = {"succeeded": "success", "success": "success", "failed": "failure", "failure": "failure",
+           "canceled": "cancelled", "cancelled": "cancelled"}
+LOG_LINE = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ): (?:Running job: (.+)|Job (.+) completed with result: (\w+))$")
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# agent: one machine
+
+
+def read_toml(path: Path) -> dict:
+    if tomllib is None:
+        sys.exit("lanes needs Python 3.11 or newer (for tomllib); `lanes demo` works on older ones")
+    try:
+        return tomllib.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+
+
+def stamp(text: str) -> int:
+    return calendar.timegm(time.strptime(text, "%Y-%m-%d %H:%M:%SZ"))
+
+
+def runner_events(lines) -> list:
+    """(time, job, result or None) for each 'Running job' and 'completed' line a GitHub runner prints."""
+    events = []
+    for line in lines:
+        match = LOG_LINE.search(line.rstrip())
+        if match:
+            when, started, finished, result = match.groups()
+            events.append((stamp(when), started or finished, None if started else RESULTS.get(result.lower(), result.lower())))
+    return events
+
+
+def finished_jobs(events: list) -> list:
+    """(start or None, end, job, result) for each job that finished, paired with its 'Running job' line."""
+    started, done = {}, []
+    for when, name, result in events:
+        if result is None:
+            started[name] = when
+        else:
+            done.append((started.pop(name, None), when, name, result))
+    return done
+
+
+def running_job(events: list) -> tuple:
+    """(job name, start) of the job running now, or (None, None) while the runner waits for one."""
+    if events and events[-1][2] is None:
+        return events[-1][1], events[-1][0]
+    return None, None
+
+
+def run(args: list, timeout: float = 20) -> str:
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def runner_services(now: float) -> tuple:
+    """Jobs from GitHub runners installed as systemd services (`svc.sh install` names them actions.runner.*)."""
+    units = [line.split()[0] for line in run(["systemctl", "list-units", "--all", "--plain", "--no-legend",
+                                              "actions.runner.*.service"]).splitlines() if line.strip()]
+    workers = run(["pgrep", "-af", "Runner.Worker"])
+    jobs, recent = [], []
+    for unit in units:
+        folder = run(["systemctl", "show", "-P", "WorkingDirectory", unit], 10).strip()
+        try:
+            info = json.loads(Path(folder, ".runner").read_text(encoding="utf-8-sig"))
+            url, name = info["gitHubUrl"].rstrip("/"), info.get("agentName", "")
+        except (OSError, ValueError, KeyError):
+            url, name = None, unit.removeprefix("actions.runner.").removesuffix(".service")
+        owner_repo = url.removeprefix("https://github.com/") if url else name
+        link = f"{url}/actions" if url and owner_repo.count("/") == 1 else url
+        events = runner_events(run(["journalctl", "--no-pager", "-o", "cat", "-u", unit,
+                                    "--since", f"-{RECENT_S // 3600 + 1}h"]).splitlines())
+        job, since = running_job(events)
+        # The journal can end on 'Running job' after a crash; a job runs only while the runner has a Worker process.
+        if job and f" {folder}/" in workers:
+            jobs.append({"repo": owner_repo, "job": job, "state": "running", "since": since, "label": name, "url": link})
+        recent += [{"repo": owner_repo, "job": j, "result": r, "started": s, "finished": e, "label": name, "url": link}
+                   for s, e, j, r in finished_jobs(events) if now - e < RECENT_S]
+    return jobs, recent
+
+
+def mem_free_gib() -> float | None:
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return round(int(line.split()[1]) / 2**20, 1)
+    except OSError:
+        pass
+    return None
+
+
+def agent() -> dict:
+    """This machine's CI. A source (a command in agent.toml that prints JSON) can add jobs, finished jobs, machine
+    fields such as `slots`, and whole machines of its own (`machines`, e.g. cloud runners this machine starts)."""
+    now = time.time()
+    config = read_toml(CONFIG_DIR / "agent.toml")
+    jobs, recent = runner_services(now) if config.get("runner_services", True) else ([], [])
+    snap = {"version": VERSION, "time": int(now), "host": socket.gethostname(), "cores": os.cpu_count(),
+            "load": round(os.getloadavg()[0], 1), "memFreeGiB": mem_free_gib(), "jobs": jobs, "recent": recent,
+            "machines": [], "errors": []}
+    for command in config.get("sources", []):
+        try:
+            out = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+            extra = json.loads(out.stdout)
+        except (subprocess.TimeoutExpired, ValueError) as error:
+            snap["errors"].append(f"source {command!r} failed: {type(error).__name__}")
+            continue
+        snap["jobs"] += extra.pop("jobs", [])
+        snap["recent"] += [r for r in extra.pop("recent", []) if now - r.get("finished", 0) < RECENT_S]
+        snap["machines"] += extra.pop("machines", [])
+        snap.update(extra)          # anything else describes this machine: slots, note, ...
+    return snap
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# hub: every machine, served as one page
+
+
+class Hub:
+    """The latest picture of every machine, refreshed in the background so a request never waits on SSH."""
+
+    def __init__(self, config: dict) -> None:
+        self.machines = config.get("machines") or [{"name": socket.gethostname()}]
+        self.snaps: dict = {}
+        self.body = b"{}"
+        try:
+            self.samples = json.loads((STATE_DIR / "samples.json").read_text())[-SAMPLES_KEPT:]
+        except (OSError, ValueError):
+            self.samples = []
+
+    def read(self, machine: dict) -> dict:
+        if not machine.get("ssh"):
+            return agent()
+        command = machine.get("command", "~/.local/bin/lanes agent")
+        ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ControlMaster=auto",
+               "-o", f"ControlPath=~/.ssh/lanes-%C", "-o", "ControlPersist=300", *shlex.split(machine.get("ssh_options", "")),
+               machine["ssh"], command]
+        try:
+            out = subprocess.run(ssh, capture_output=True, text=True, timeout=25)
+            return json.loads(out.stdout)
+        except subprocess.TimeoutExpired:
+            return {"error": "no answer in 25 seconds"}
+        except ValueError:
+            reason = (out.stderr.strip().splitlines() or ["no output"])[-1][:160]
+            return {"error": f"agent failed: {reason}"}
+
+    def refresh(self) -> None:
+        now = time.time()
+        threads = [threading.Thread(target=lambda m=m: self.snaps.__setitem__(m["name"], self.read(m)))
+                   for m in self.machines]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        machines, virtual, history = [], {}, []
+        for m in self.machines:
+            snap = self.snaps.get(m["name"], {"error": "not checked yet"})
+            if "error" in snap:
+                machines.append({"name": m["name"], "ok": False, "error": snap["error"], "jobs": []})
+                continue
+            entry = {k: v for k, v in snap.items() if k not in ("jobs", "recent", "machines", "errors", "time", "version")}
+            entry.update(name=m["name"], ok=True, jobs=[], warnings=snap.get("errors", []))
+            machines.append(entry)
+            for job in snap["jobs"]:
+                target = job.get("machine") or m["name"]
+                (entry if target == m["name"] else virtual.setdefault(target, {"name": target, "ok": True, "jobs": []}))["jobs"].append({**job, "machine": target})
+            history += [{**r, "machine": r.get("machine") or m["name"]} for r in snap["recent"]]
+            for extra in snap.get("machines", []):
+                virtual.setdefault(extra["name"], {"name": extra["name"], "ok": True, "jobs": []}).update(
+                    {k: v for k, v in extra.items() if k != "jobs"}, virtual=True)
+        machines += list(virtual.values())
+        for machine in machines:
+            machine["jobs"].sort(key=lambda j: j.get("since") or 0)
+        self.sample(now, machines)
+        jobs = [j for m in machines for j in m["jobs"]]
+        history.sort(key=lambda r: r["finished"])
+        self.body = json.dumps({
+            "version": VERSION, "updated": int(now),
+            "running": sum(1 for j in jobs if j.get("state", "running") == "running"),
+            "starting": sum(1 for j in jobs if j.get("state") == "starting"),
+            "machines": machines, "history": history, "recent": history[::-1][:12], "samples": self.samples,
+        }).encode()
+
+    def sample(self, now: float, machines: list) -> None:
+        if self.samples and now - self.samples[-1]["t"] < SAMPLE_EVERY_S:
+            return
+        point = {"t": int(now), **{m["name"]: {"load": m["load"]} for m in machines if m.get("load") is not None}}
+        self.samples = [*self.samples, point][-SAMPLES_KEPT:]
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            (STATE_DIR / "samples.json").write_text(json.dumps(self.samples))
+        except OSError:
+            pass
+
+    def loop(self) -> None:
+        while True:
+            try:
+                self.refresh()
+            except Exception as error:      # keep serving the last good picture; the next pass may work
+                print(f"refresh failed: {error!r}", file=sys.stderr, flush=True)
+            time.sleep(REFRESH_S)
+
+
+def page() -> bytes:
+    for place in PAGE_PLACES:
+        if place.exists():
+            return place.read_bytes()       # read on every request, so an edited page shows without a restart
+    return b"<p>lanes.html is missing: put it next to the lanes script or in ~/.local/share/lanes/</p>"
+
+
+def serve(source, host: str, port: int) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def reply(self, code: int, body: bytes = b"", kind: str = "application/json") -> None:
+            self.send_response(code)
+            # Only the T3 Code card (an app page, t3code://) may read the data from another origin.
+            origin = self.headers.get("Origin", "")
+            if origin.startswith("t3code://"):
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+            self.send_header("Content-Type", kind)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            path = self.path.split("?")[0]
+            if path == "/":
+                self.reply(200, page(), "text/html; charset=utf-8")
+            elif path == "/status.json":
+                self.reply(200, source())
+            else:
+                self.reply(404)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    print(f"lanes {VERSION}: http://{host}:{port}/", flush=True)
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
+
+
+def hub(path: str | None) -> None:
+    config = read_toml(Path(path) if path else CONFIG_DIR / "hub.toml")
+    lanes = Hub(config)
+    lanes.refresh()
+    threading.Thread(target=lanes.loop, daemon=True).start()
+    serve(lambda: lanes.body, config.get("listen", "127.0.0.1"), int(config.get("port", 8792)))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# demo: made-up data, so the app and page can be tried without a fleet
+
+
+def demo() -> None:
+    rng = random.Random(7)
+    start = time.time()
+    repos = ["acme/api", "acme/web", "acme/mobile", "acme/infra", "acme/docs"]
+    names = ["test", "lint", "build", "e2e", "deploy preview", "typecheck"]
+    machines = ["build-01", "build-02", "gpu-box"]
+    history = []
+    t = start - RECENT_S
+    while t < start + 12 * 3600:       # jobs keep coming for 12 hours after the demo starts
+        m = rng.choice(machines)
+        length = rng.randint(40, 900)
+        history.append({"machine": m, "repo": rng.choice(repos), "job": rng.choice(names), "started": int(t),
+                        "finished": int(t + length), "result": "failure" if rng.random() < 0.06 else "success",
+                        "label": f"{m}-runner-{rng.randint(1, 4)}", "url": None})
+        t += rng.expovariate(1 / 70)
+    samples = [{"t": int(start - 7200 + i * 30), **{m: {"load": round(4 + 3 * abs(((i + k * 40) % 80) - 40) / 40 + rng.random(), 1)}
+                                                    for k, m in enumerate(machines)}} for i in range(240)]
+
+    def body() -> bytes:
+        now = time.time()
+        done = [h for h in history if h["finished"] <= now]
+        live = [h for h in history if h["started"] <= now < h["finished"]]
+        ms = []
+        for k, m in enumerate(machines):
+            jobs = [{"repo": h["repo"], "job": h["job"], "state": "running", "since": h["started"], "label": h["label"],
+                     "url": None} for h in live if h["machine"] == m]
+            ms.append({"name": m, "ok": True, "cores": [16, 16, 32][k], "load": samples[-1][m]["load"],
+                       "memFreeGiB": [21.5, 9.8, 60.2][k], "jobs": jobs})
+        ms.append({"name": "cloud", "ok": True, "virtual": True, "meter": {"label": "minutes left this month", "value": 1840, "max": 3000}, "jobs": []})
+        return json.dumps({"version": VERSION, "updated": int(now), "running": sum(len(m["jobs"]) for m in ms), "starting": 0,
+                           "machines": ms, "history": done, "recent": done[::-1][:12], "samples": samples}).encode()
+
+    serve(body, "127.0.0.1", int(os.environ.get("LANES_PORT", "8792")))
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if args[:1] == ["agent"]:
+        print(json.dumps(agent()))
+    elif args[:1] == ["hub"] and len(args) <= 2:
+        hub(args[1] if len(args) == 2 else None)
+    elif args == ["demo"]:
+        demo()
+    elif args in (["--version"], ["version"]):
+        print(VERSION)
+    else:
+        sys.exit(__doc__)

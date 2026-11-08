@@ -1,0 +1,471 @@
+<!doctype html>
+<!-- Lanes: the charts page. `lanes hub` serves it at / and its data at /status.json. The Lanes menu bar app shows it
+     (?in=menubar); it also works in any browser tab, or inside another app (?in=t3, for the T3 Code card). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lanes</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --ink-3: #8a8984;
+    --grid: #e6e5e1;
+    --track: #ecebe7;
+    --hover: rgba(0, 0, 0, .04);
+    --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100;
+    --c5: #e87ba4; --c6: #008300; --c7: #6250d6; --c8: #e34948;
+    --good: #0ca30c;
+    --bad: #d03b3b;
+    --warn: #fab219;
+    --gone: #b9b8b2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --ink-3: #8f8e86;
+      --grid: #2f2f2d; --track: #2a2a28; --hover: rgba(255, 255, 255, .05); --gone: #55544f;
+      --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500;
+      --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #e66767;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --ink-3: #8f8e86;
+    --grid: #2f2f2d; --track: #2a2a28; --hover: rgba(255, 255, 255, .05); --gone: #55544f;
+    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500;
+    --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #e66767;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: transparent; color: var(--ink); }
+  html.standalone body { background: var(--surface); min-height: 100vh; }
+  html.standalone #app { max-width: 560px; margin: 0 auto; }
+  html.menubar body { background: color-mix(in srgb, var(--surface) 86%, transparent); min-height: 100vh; }
+  body { font: 12px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+         padding: 16px 18px 18px; -webkit-font-smoothing: antialiased; cursor: default; user-select: none; }
+  a { color: inherit; text-decoration: none; }
+  section { margin-top: 20px; }
+  h2 { margin: 0 0 9px; font-size: 11px; font-weight: 600; color: var(--ink-2); display: flex; align-items: baseline; gap: 8px; }
+  h2 .aside { font-weight: 400; color: var(--ink-3); margin-left: auto; }
+  .head { display: flex; align-items: flex-end; gap: 10px; }
+  .hero { font-size: 46px; font-weight: 600; line-height: .9; letter-spacing: -0.03em; }
+  .hero-label { color: var(--ink-2); padding-bottom: 3px; line-height: 1.3; }
+  .hero-label b { color: var(--ink); font-weight: 600; }
+  .legend { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 10px; color: var(--ink-2);
+            padding-bottom: 3px; font-size: 11px; max-width: 60%; }
+  .key { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+  .fresh { color: var(--ink-3); font-size: 11px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .fresh.stale { color: var(--bad); }
+  svg { display: block; overflow: visible; max-width: 100%; height: auto; }
+  svg text { fill: var(--ink-3); font-size: 10px; font-variant-numeric: tabular-nums; }
+  .machines { display: grid; grid-template-columns: minmax(70px, auto) 1fr auto; column-gap: 14px; row-gap: 14px; align-items: center; }
+  .mname { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; white-space: nowrap; }
+  .mmeta { color: var(--ink-3); font-size: 11px; margin-top: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mmeta.err { color: var(--bad); white-space: normal; }
+  .mmeta.warn { color: var(--ink-2); }
+  .slots { display: flex; gap: 2px; height: 8px; }
+  .slots i { flex: 1; border-radius: 2px; background: var(--track); }
+  .meter { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+  .meter i { display: block; height: 100%; border-radius: 4px; }
+  .run { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; column-gap: 9px; row-gap: 4px; align-items: center;
+         padding: 6px 6px; margin: 0 -6px; border-radius: 6px; }
+  .run { position: relative; }
+  .run + .run::before { content: ''; position: absolute; left: 6px; right: 6px; top: 0; height: 1px; background: var(--grid); }
+  .run[href]:hover::before, .run[href]:hover + .run::before { background: transparent; }
+  .run[href]:hover { background: var(--hover); }
+  .run .what { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .run .what b { font-weight: 600; }
+  .run .what span { color: var(--ink-2); }
+  .run .when { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 11px; }
+  .run .bar { grid-column: 2 / 4; height: 3px; border-radius: 2px; background: var(--track); overflow: hidden; }
+  .run .bar i { display: block; height: 100%; border-radius: 2px; transition: width .6s ease; }
+  .empty { color: var(--ink-3); padding: 4px 0; }
+  .tally { display: flex; gap: 12px; color: var(--ink-2); font-size: 11px; margin-bottom: 9px; font-variant-numeric: tabular-nums; }
+  .tally b { color: var(--ink); font-weight: 600; }
+  .ok-i { color: var(--good); } .bad-i { color: var(--bad); }
+  .tiles { display: flex; flex-wrap: wrap; gap: 2px; }
+  .tiles a, .tiles span { width: 7px; height: 7px; border-radius: 2px; }
+  .tiles a:hover, .tiles span:hover { outline: 1.5px solid var(--ink); outline-offset: 1px; }
+  #tip { position: fixed; z-index: 10; pointer-events: none; max-width: 270px; padding: 7px 9px; border-radius: 7px; font-size: 11px;
+         line-height: 1.45; white-space: pre-line; background: var(--ink); color: var(--surface); opacity: 0; transition: opacity .1s;
+         box-shadow: 0 4px 16px rgba(0, 0, 0, .25); }
+  #tip b { font-weight: 600; }
+  .problem { padding: 28px 4px; text-align: center; color: var(--ink-2); line-height: 1.5; }
+  .problem b { display: block; color: var(--ink); font-size: 13px; margin-bottom: 4px; }
+  @keyframes breathe { 0%, 100% { opacity: .3; } 50% { opacity: .85; } }
+  .live { animation: breathe 2.4s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .live { animation: none; } .run .bar i { transition: none; } }
+</style>
+</head>
+<body>
+<div id="app"><div class="problem">Loading…</div></div>
+<div id="tip" role="tooltip"></div>
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const host = params.get('in');               // menubar, t3, or none (a plain browser tab)
+  document.documentElement.classList.add(host === 'menubar' ? 'menubar' : host ? 'embedded' : 'standalone');
+  if (params.get('theme')) document.documentElement.dataset.theme = params.get('theme');
+
+  const clock = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
+  const hourFmt = new Intl.DateTimeFormat('en-US', { hour: 'numeric' });
+  const app = document.getElementById('app');
+  const tip = document.getElementById('tip');
+  const NS = 'http://www.w3.org/2000/svg';
+  let status = null;
+  let problem = null;
+  let names = [];                               // machine order, which fixes each machine's color
+
+  // Colors follow the machine, never its rank: slot by position in the hub's list (8 slots, then they repeat).
+  const color = (name) => `var(--c${(Math.max(0, names.indexOf(name)) % 8) + 1})`;
+  const resultColor = { success: 'var(--good)', failure: 'var(--bad)' };
+
+  const el = (tag, attrs = {}, ...kids) => {
+    const node = tag.startsWith('svg:') ? document.createElementNS(NS, tag.slice(4)) : document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v == null || v === false) continue;
+      if (k === 'style' && typeof v === 'object') Object.assign(node.style, v);
+      else if (k === 'text') node.textContent = v;
+      else node.setAttribute(k, v);
+    }
+    node.append(...kids.filter((k) => k != null));
+    return node;
+  };
+  const dur = (s) => {
+    s = Math.max(0, Math.round(s));
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m`;
+    return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  };
+  const short = (repo) => (repo || '').split('/').pop();
+  const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
+  const width = () => Math.max(260, app.clientWidth);
+  const verdict = (r) => (r === 'success' ? '✓ passed' : r === 'failure' ? '✗ failed' : `– ${r}`);
+
+  // Every job as an interval: finished ones from the last 6 hours, plus the ones running now.
+  const intervals = (now) => {
+    const done = status.history.filter((j) => j.started).map((j) => ({ ...j, s: j.started, e: j.finished }));
+    const live = status.machines.flatMap((m) => m.jobs.filter((j) => (j.state || 'running') === 'running' && j.since)
+      .map((j) => ({ ...j, machine: m.name, s: j.since, e: now, live: true })));
+    return [...done, ...live];
+  };
+  const usualTimes = () => {
+    const by = new Map();
+    for (const j of status.history) {
+      if (!j.started || j.result !== 'success') continue;
+      const key = `${j.repo}\u0000${j.job}`;
+      by.set(key, [...(by.get(key) || []), j.finished - j.started]);
+    }
+    return (j) => median(by.get(`${j.repo}\u0000${j.job}`) || []);
+  };
+  const tipFor = (j, now) => {
+    const lines = [`${short(j.repo)} · ${j.job || 'waiting for a job'}`, [j.machine, j.label].filter(Boolean).join(' · ')];
+    if (j.live) lines.push(`running ${dur(now - j.s)}, since ${clock.format(j.s * 1000)}`);
+    else lines.push(`${verdict(j.result)}${j.s ? ` in ${dur(j.e - j.s)}` : ''}, at ${clock.format(j.e * 1000)}`);
+    if (j.url) lines.push('Click to open on GitHub');
+    return lines.join('\n');
+  };
+  const open = (url) => { if (url) window.open(url, '_blank', 'noopener'); };
+  const hoverable = (node, text) => {
+    node.addEventListener('mousemove', (ev) => showTip(ev, typeof text === 'function' ? text() : text));
+    node.addEventListener('mouseleave', hideTip);
+    return node;
+  };
+
+  // ---- 6 hours as stacked columns: jobs running at once per machine, averaged over each 10 minutes
+  function concurrency(now, all) {
+    const W = width(), H = 84, top = 16, bottom = 16;
+    const span = 6 * 3600, bucket = 600, t0 = now - span, n = span / bucket;
+    const cols = [];
+    for (let b = 0; b < n; b++) {
+      const a = t0 + b * bucket, per = names.map(() => 0);
+      for (let t = a; t < a + bucket; t += 60) {
+        names.forEach((m, mi) => { per[mi] += all.filter((j) => j.machine === m && j.s <= t && j.e > t).length / 10; });
+      }
+      cols.push({ a, per });
+    }
+    const peak = Math.max(4, Math.ceil(Math.max(...cols.map((c) => c.per.reduce((x, y) => x + y, 0)))));
+    const slot = W / n, colW = Math.max(3, Math.min(24, slot - 2));
+    const y = (v) => top + (H - top - bottom) * (1 - v / peak);
+    const svg = el('svg:svg', { width: '100%', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Jobs running at once over the last 6 hours, by machine' });
+    svg.append(el('svg:line', { x1: 0, x2: W, y1: y(peak), y2: y(peak), stroke: 'var(--grid)', 'stroke-width': 1 }));
+    svg.append(el('svg:text', { x: 0, y: y(peak) - 5, text: `${peak} at once` }));
+    svg.append(el('svg:line', { x1: 0, x2: W, y1: y(0) + 0.5, y2: y(0) + 0.5, stroke: 'var(--grid)', 'stroke-width': 1 }));
+    for (let t = Math.ceil(t0 / 3600) * 3600; t < now - 1500; t += 3600) {
+      if (((t / 3600) % 2) !== 0) continue;
+      svg.append(el('svg:text', { x: ((t - t0) / span) * W, y: H - 3, 'text-anchor': 'middle', text: hourFmt.format(t * 1000) }));
+    }
+    svg.append(el('svg:text', { x: W, y: H - 3, 'text-anchor': 'end', text: 'now' }));
+    cols.forEach((c, i) => {
+      const cx = i * slot + (slot - colW) / 2;
+      let level = 0;
+      const g = el('svg:g');
+      names.forEach((m, mi) => {
+        const v = c.per[mi];
+        if (v < 0.05) return;
+        const y1 = y(level + v), y2 = y(level) - (level ? 2 : 0);      // 2px surface gap between stacked parts
+        level += v;
+        if (y2 - y1 < 1) return;
+        g.append(el('svg:rect', { x: cx, y: y1, width: colW, height: y2 - y1, rx: Math.min(2, (y2 - y1) / 2), fill: color(m) }));
+      });
+      const hit = hoverable(el('svg:rect', { x: i * slot, y: 0, width: slot, height: H - bottom, fill: 'transparent' }),
+        `${clock.format(c.a * 1000)} – ${clock.format((c.a + bucket) * 1000)}, average at once\n` +
+        names.map((m, mi) => `${m}  ${c.per[mi].toFixed(1)}`).join('\n'));
+      svg.append(g, hit);
+    });
+    return svg;
+  }
+
+  // ---- per machine: busy slots or load, a 2-hour load sparkline, or a source's own meter
+  function sparkline(m) {
+    const pts = status.samples.filter((s) => s[m.name]).map((s) => [s.t, s[m.name].load]);
+    const W = 96, H = 22;
+    const svg = el('svg:svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` });
+    if (pts.length < 2) return svg;
+    const t0 = pts[0][0], t1 = pts[pts.length - 1][0], cores = m.cores || 1;
+    const hi = Math.max(cores, ...pts.map((p) => p[1]));
+    const x = (t) => ((t - t0) / Math.max(1, t1 - t0)) * (W - 5);
+    const y = (v) => 2 + (H - 4) * (1 - v / hi);
+    svg.append(el('svg:line', { x1: 0, x2: W - 5, y1: y(cores), y2: y(cores), stroke: 'var(--grid)', 'stroke-width': 1 }));
+    const d = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join('');
+    svg.append(el('svg:path', { d: `${d}L${x(t1)},${H}L0,${H}Z`, fill: color(m.name), 'fill-opacity': 0.1 }));
+    svg.append(el('svg:path', { d, fill: 'none', stroke: color(m.name), 'stroke-width': 1.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    const last = pts[pts.length - 1];
+    svg.append(el('svg:circle', { cx: x(last[0]), cy: y(last[1]), r: 3, fill: color(m.name), stroke: 'var(--surface)', 'stroke-width': 1.5 }));
+    return hoverable(svg, `${m.name} load, last ${dur(t1 - t0)}\nnow ${last[1]} on ${cores} cores · peak ${Math.max(...pts.map((p) => p[1]))}`);
+  }
+
+  function meter(share, fill, title) {
+    return el('div', { class: 'meter', title }, el('i', { style: { width: `${Math.max(0, Math.min(1, share)) * 100}%`, background: fill } }));
+  }
+
+  function machineRows() {
+    const grid = el('div', { class: 'machines' });
+    for (const m of status.machines) {
+      const running = m.jobs.filter((j) => (j.state || 'running') === 'running').length;
+      const name = el('div', {}, el('div', { class: 'mname' }, el('span', { class: 'dot', style: { background: color(m.name) } }), m.name));
+      let middle = el('div'), right = el('div');
+      if (!m.ok) {
+        name.append(el('div', { class: 'mmeta err', text: m.error || 'no answer' }));
+      } else {
+        name.append(el('div', { class: 'mmeta', text: `${running} running${m.draining ? ' · draining' : ''}` }));
+        const lines = [];
+        if (m.slots && m.slots.total) {
+          const blocks = el('div', { class: 'slots' });
+          for (let i = 0; i < m.slots.total; i++) blocks.append(el('i', { style: i < m.slots.used ? { background: color(m.name) } : null }));
+          middle.append(blocks);
+          lines.push(`${m.slots.used} of ${m.slots.total} ${m.slots.label || 'slots'}`);
+        } else if (m.meter && m.meter.max) {
+          const share = m.meter.value / m.meter.max;
+          middle.append(meter(share, share < 0.15 ? 'var(--bad)' : share < 0.3 ? 'var(--warn)' : color(m.name), m.meter.label));
+          lines.push(`${m.meter.value} of ${m.meter.max} ${m.meter.label || ''}`.trim());
+        } else if (m.load != null && m.cores) {
+          middle.append(meter(m.load / m.cores, color(m.name), 'load against cores'));
+          lines.push(`load ${m.load} on ${m.cores} cores`);
+        }
+        const others = m.jobs.filter((j) => !j.size).length;     // jobs not holding a slot: runner services
+        if (m.slots && others) lines.push(`${others} on runner services`);
+        if (m.note) lines.push(m.note);
+        if (lines.length) middle.append(el('div', { class: 'mmeta', text: lines.join(' · ') }));
+        for (const w of m.warnings || []) middle.append(el('div', { class: 'mmeta warn', text: `⚠ ${w}` }));
+        if (m.load != null) {
+          right.append(sparkline(m), el('div', { class: 'mmeta', style: { textAlign: 'right' },
+            text: `load ${m.load}${m.cores ? `/${m.cores}` : ''}${m.memFreeGiB != null ? ` · ${Math.round(m.memFreeGiB)} GB free` : ''}` }));
+        }
+      }
+      grid.append(name, middle, right);
+    }
+    return grid;
+  }
+
+  // ---- running now, each with how far along it is against that job's usual time
+  function runningList(now) {
+    const usual = usualTimes();
+    const wrap = el('div');
+    const jobs = status.machines.flatMap((m) => m.jobs.map((j) => ({ ...j, machine: m.name })))
+      .sort((a, b) => (a.since || 0) - (b.since || 0));
+    if (!jobs.length) wrap.append(el('div', { class: 'empty', text: 'Nothing running. Every machine is idle.' }));
+    for (const j of jobs) {
+      const starting = j.state === 'starting';
+      const elapsed = now - (j.since || now);
+      const norm = starting ? null : usual(j);
+      const row = el(j.url ? 'a' : 'div', { class: 'run', href: j.url, target: '_blank', rel: 'noopener' },
+        el('span', { class: 'dot', style: { background: color(j.machine), opacity: starting ? 0.4 : 1 } }),
+        el('div', { class: 'what' }, el('b', { text: short(j.repo) }), el('span', { text: `  ${j.job || 'starting…'}` })),
+        el('div', { class: 'when', text: starting ? 'starting' : norm ? `${dur(elapsed)} of ~${dur(norm)}` : dur(elapsed) }));
+      if (!starting) {
+        const share = norm ? Math.min(1, elapsed / norm) : null;
+        const over = norm && elapsed > norm * 1.5;
+        row.append(el('div', { class: 'bar' }, el('i', { style: {
+          width: share == null ? '100%' : `${Math.max(3, share * 100)}%`,
+          background: over ? 'var(--warn)' : color(j.machine), opacity: share == null ? 0.22 : 1 } })));
+      }
+      hoverable(row, [j.repo, [j.machine, j.label].filter(Boolean).join(' · '),
+        starting ? 'machine starting; waiting for GitHub to hand it the job'
+          : `running ${dur(elapsed)}${norm ? `; usually ${dur(norm)}${elapsed > norm * 1.5 ? ' (running long)' : ''}` : ''}`].join('\n'));
+      wrap.append(row);
+    }
+    return wrap;
+  }
+
+  // ---- the last hour as swimlanes: one band per machine, jobs packed into lanes
+  function timeline(now, all) {
+    const W = width(), span = 3600, t0 = now - span, label = 84, bandGap = 12, axis = 16, maxLanes = 10;
+    const plotW = W - label - 4;
+    const x = (t) => label + ((Math.max(t, t0) - t0) / span) * plotW;
+    const bands = names.map((m) => {
+      const jobs = all.filter((j) => j.machine === m && j.e > t0).sort((a, b) => a.s - b.s);
+      const ends = [];
+      for (const j of jobs) {
+        let lane = ends.findIndex((e) => e <= j.s - 20);
+        if (lane < 0) lane = ends.length < maxLanes ? ends.push(0) - 1 : ends.indexOf(Math.min(...ends));
+        ends[lane] = Math.max(ends[lane], j.e);
+        j.lane = lane;
+      }
+      const lanes = Math.max(1, ends.length);
+      const laneH = lanes > 6 ? 5 : 7, gap = lanes > 6 ? 2 : 3;
+      return { m, jobs, lanes, laneH, gap, h: lanes * (laneH + gap) - gap };
+    });
+    const H = bands.reduce((h, b) => h + b.h + bandGap, 0) - bandGap + axis + 4;
+    const svg = el('svg:svg', { width: '100%', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Jobs in the last hour, by machine' });
+    for (let k = 0; k <= 4; k++) {
+      const gx = x(t0 + (span * k) / 4);
+      svg.append(el('svg:line', { x1: gx, x2: gx, y1: 0, y2: H - axis, stroke: 'var(--grid)', 'stroke-width': 1 }));
+      svg.append(el('svg:text', { x: gx, y: H - 3, 'text-anchor': k === 0 ? 'start' : k === 4 ? 'end' : 'middle', text: k === 4 ? 'now' : `${60 - k * 15}m ago` }));
+    }
+    let y0 = 0;
+    for (const band of bands) {
+      const mid = y0 + Math.min(band.h, 8) / 2;
+      svg.append(el('svg:circle', { cx: 4, cy: mid, r: 4, fill: color(band.m) }));
+      svg.append(el('svg:text', { x: 13, y: mid + 3.5, style: 'fill: var(--ink-2); font-weight: 600', text: band.m.length > 11 ? `${band.m.slice(0, 10)}…` : band.m }));
+      if (!band.jobs.length) svg.append(el('svg:line', { x1: label, x2: label + plotW, y1: mid, y2: mid, stroke: 'var(--track)', 'stroke-width': 2, 'stroke-linecap': 'round' }));
+      for (const j of band.jobs) {
+        const bx = x(j.s), bw = Math.max(3, x(j.e) - bx), by = y0 + j.lane * (band.laneH + band.gap);
+        const failed = j.result === 'failure';
+        const fill = failed ? 'var(--bad)' : j.live || j.result === 'success' ? color(band.m) : 'var(--gone)';
+        const bar = el('svg:rect', { x: bx, y: by, width: bw, height: band.laneH, rx: Math.min(3, band.laneH / 2), fill,
+          'fill-opacity': j.live || failed ? 1 : 0.4, style: j.url ? 'cursor:pointer' : null });
+        hoverable(bar, () => tipFor(j, Date.now() / 1000));
+        bar.addEventListener('click', () => open(j.url));
+        svg.append(bar);
+        if (j.live) svg.append(el('svg:circle', { class: 'live', cx: bx + bw - 1, cy: by + band.laneH / 2, r: band.laneH * 0.65, fill: color(band.m), 'pointer-events': 'none' }));
+      }
+      y0 += band.h + bandGap;
+    }
+    return svg;
+  }
+
+  // ---- the last 6 hours: one tile per finished job, oldest first
+  function results() {
+    const done = status.history;
+    if (!done.length) return el('div', { class: 'empty', text: 'No jobs finished in the last 6 hours.' });
+    const passed = done.filter((j) => j.result === 'success').length;
+    const failed = done.filter((j) => j.result === 'failure').length;
+    const other = done.length - passed - failed;
+    const times = done.filter((j) => j.started).map((j) => j.finished - j.started);
+    const tally = el('div', { class: 'tally' },
+      el('span', {}, el('span', { class: 'ok-i', text: '✓ ' }), el('b', { text: passed }), ' passed'),
+      el('span', {}, el('span', { class: 'bad-i', text: '✗ ' }), el('b', { text: failed }), ' failed'));
+    if (other) tally.append(el('span', {}, '– ', el('b', { text: other }), ' cancelled'));
+    if (times.length) tally.append(el('span', { style: { marginLeft: 'auto' } }, 'median ', el('b', { text: dur(median(times)) })));
+    const tiles = el('div', { class: 'tiles', role: 'list', 'aria-label': 'Finished jobs, oldest first' });
+    for (const j of done) {
+      const tile = el(j.url ? 'a' : 'span', { href: j.url, target: '_blank', rel: 'noopener', role: 'listitem',
+        style: { background: resultColor[j.result] || 'var(--gone)', opacity: j.result === 'success' ? 0.55 : 1 },
+        'aria-label': `${short(j.repo)} ${j.job} ${j.result}` });
+      tiles.append(hoverable(tile, () => tipFor({ ...j, s: j.started, e: j.finished }, 0)));
+    }
+    return el('div', {}, tally, tiles);
+  }
+
+  function showTip(ev, text) {
+    const [first, ...rest] = text.split('\n');
+    tip.replaceChildren(el('b', { text: first }), rest.length ? `\n${rest.join('\n')}` : '');
+    tip.style.opacity = 1;
+    const r = tip.getBoundingClientRect();
+    let left = ev.clientX + 12, top = ev.clientY + 14;
+    if (left + r.width > innerWidth - 6) left = ev.clientX - r.width - 12;
+    if (top + r.height > innerHeight - 6) top = ev.clientY - r.height - 10;
+    tip.style.left = `${Math.max(6, left)}px`;
+    tip.style.top = `${Math.max(6, top)}px`;
+  }
+  function hideTip() { tip.style.opacity = 0; }
+
+  function freshness() {
+    const node = document.querySelector('.fresh');
+    if (!node || !status) return;
+    const age = Date.now() / 1000 - status.updated;
+    node.classList.toggle('stale', age > 30 || !!problem);
+    node.textContent = problem ? `${problem} · showing data from ${clock.format(status.updated * 1000)}`
+      : age < 10 ? 'updated just now' : `updated ${dur(age)} ago`;
+  }
+
+  // The menu bar app sizes its panel to the page; T3's card does the same.
+  function reportHeight() {
+    const height = Math.ceil(document.documentElement.scrollHeight);
+    window.webkit?.messageHandlers?.lanes?.postMessage({ height });
+    if (host === 't3') parent.postMessage({ type: 'lanes-height', height }, '*');
+  }
+
+  function render() {
+    hideTip();
+    if (!status) {
+      app.replaceChildren(problem
+        ? el('div', { class: 'problem' }, el('b', { text: "Can't reach the Lanes hub" }),
+            `Nothing answers at ${location.host}. Is \`lanes hub\` running, and the tunnel to it up?`)
+        : el('div', { class: 'problem', text: 'Loading…' }));
+      reportHeight();
+      return;
+    }
+    names = status.machines.map((m) => m.name);
+    const now = Date.now() / 1000;
+    const all = intervals(now);
+    const legend = el('div', { class: 'legend' }, ...names.map((m) => el('span', { class: 'key' }, el('span', { class: 'dot', style: { background: color(m) } }), m)));
+    const label = el('div', { class: 'hero-label' }, `job${status.running === 1 ? '' : 's'} running`);
+    if (status.starting) label.append(el('div', {}, el('b', { text: status.starting }), ' starting'));
+    app.replaceChildren(
+      el('div', { class: 'head' }, el('div', { class: 'hero', text: status.running }), label, legend),
+      el('div', { class: 'fresh' }),
+      el('section', {}, el('h2', {}, 'Jobs at once', el('span', { class: 'aside', text: 'last 6 hours' })), concurrency(now, all)),
+      el('section', {}, el('h2', {}, 'Machines', el('span', { class: 'aside', text: 'load, last 2 hours' })), machineRows()),
+      el('section', {}, el('h2', {}, 'Running now'), runningList(now)),
+      el('section', {}, el('h2', {}, 'Last hour', el('span', { class: 'aside', text: 'bright: running · faded: passed · red: failed' })), timeline(now, all)),
+      el('section', {}, el('h2', {}, 'Finished', el('span', { class: 'aside', text: 'last 6 hours, oldest first' })), results()),
+    );
+    freshness();
+    reportHeight();
+  }
+
+  async function refresh() {
+    try {
+      const response = await fetch('status.json', { cache: 'no-store' });
+      if (!response.ok) throw new Error(response.status);
+      status = await response.json();
+      problem = null;
+    } catch {
+      problem = "Can't reach the Lanes hub";
+    }
+    render();
+  }
+
+  // Esc or Ctrl+Shift+C asks the host (menu bar panel or T3 card) to close.
+  addEventListener('keydown', (ev) => {
+    const toggle = ev.ctrlKey && ev.shiftKey && !ev.metaKey && !ev.altKey && ev.code === 'KeyC';
+    if (ev.key !== 'Escape' && !toggle) return;
+    ev.preventDefault();
+    if (host === 't3') parent.postMessage({ type: 'lanes-close' }, '*');
+    window.webkit?.messageHandlers?.lanes?.postMessage({ close: true });
+  });
+  let resizeTimer;
+  addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 80); });
+  refresh();
+  setInterval(refresh, 5000);
+  setInterval(freshness, 1000);
+})();
+</script>
+</body>
+</html>
