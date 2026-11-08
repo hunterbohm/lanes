@@ -1,6 +1,5 @@
 [Unit]
 Description=Lanes hub: CI on all your machines, served on 127.0.0.1:8792
-After=network-online.target
 
 [Service]
 ExecStart=%h/.local/bin/lanes hub

@@ -1,6 +1,6 @@
 <!doctype html>
 <!-- Lanes: the charts page. `lanes hub` serves it at / and its data at /status.json. The Lanes menu bar app shows it
-     (?in=menubar); it also works in any browser tab, or inside another app (?in=t3, for the T3 Code card). -->
+     (?in=menubar). It also works in any browser tab, or in an iframe inside another app (?in=embed). -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -107,7 +107,7 @@
 <script>
 (() => {
   const params = new URLSearchParams(location.search);
-  const host = params.get('in');               // menubar, t3, or none (a plain browser tab)
+  const host = params.get('in');               // menubar, embed (an iframe in another app), or none (a browser tab)
   document.documentElement.classList.add(host === 'menubar' ? 'menubar' : host ? 'embedded' : 'standalone');
   if (params.get('theme')) document.documentElement.dataset.theme = params.get('theme');
 
@@ -166,10 +166,12 @@
     const lines = [`${short(j.repo)} · ${j.job || 'waiting for a job'}`, [j.machine, j.label].filter(Boolean).join(' · ')];
     if (j.live) lines.push(`running ${dur(now - j.s)}, since ${clock.format(j.s * 1000)}`);
     else lines.push(`${verdict(j.result)}${j.s ? ` in ${dur(j.e - j.s)}` : ''}, at ${clock.format(j.e * 1000)}`);
-    if (j.url) lines.push('Click to open on GitHub');
+    if (safe(j.url)) lines.push('Click to open on GitHub');
     return lines.join('\n');
   };
-  const open = (url) => { if (url) window.open(url, '_blank', 'noopener'); };
+  // Links come from agents and sources; only web links are followed.
+  const safe = (url) => (typeof url === 'string' && /^https?:\/\//i.test(url) ? url : null);
+  const open = (url) => { if (safe(url)) window.open(safe(url), '_blank', 'noopener'); };
   const hoverable = (node, text) => {
     node.addEventListener('mousemove', (ev) => showTip(ev, typeof text === 'function' ? text() : text));
     node.addEventListener('mouseleave', hideTip);
@@ -293,7 +295,7 @@
       const starting = j.state === 'starting';
       const elapsed = now - (j.since || now);
       const norm = starting ? null : usual(j);
-      const row = el(j.url ? 'a' : 'div', { class: 'run', href: j.url, target: '_blank', rel: 'noopener' },
+      const row = el(safe(j.url) ? 'a' : 'div', { class: 'run', href: safe(j.url), target: '_blank', rel: 'noopener' },
         el('span', { class: 'dot', style: { background: color(j.machine), opacity: starting ? 0.4 : 1 } }),
         el('div', { class: 'what' }, el('b', { text: short(j.repo) }), el('span', { text: `  ${j.job || 'starting…'}` })),
         el('div', { class: 'when', text: starting ? 'starting' : norm ? `${dur(elapsed)} of ~${dur(norm)}` : dur(elapsed) }));
@@ -348,7 +350,7 @@
         const failed = j.result === 'failure';
         const fill = failed ? 'var(--bad)' : j.live || j.result === 'success' ? color(band.m) : 'var(--gone)';
         const bar = el('svg:rect', { x: bx, y: by, width: bw, height: band.laneH, rx: Math.min(3, band.laneH / 2), fill,
-          'fill-opacity': j.live || failed ? 1 : 0.4, style: j.url ? 'cursor:pointer' : null });
+          'fill-opacity': j.live || failed ? 1 : 0.4, style: safe(j.url) ? 'cursor:pointer' : null });
         hoverable(bar, () => tipFor(j, Date.now() / 1000));
         bar.addEventListener('click', () => open(j.url));
         svg.append(bar);
@@ -374,7 +376,7 @@
     if (times.length) tally.append(el('span', { style: { marginLeft: 'auto' } }, 'median ', el('b', { text: dur(median(times)) })));
     const tiles = el('div', { class: 'tiles', role: 'list', 'aria-label': 'Finished jobs, oldest first' });
     for (const j of done) {
-      const tile = el(j.url ? 'a' : 'span', { href: j.url, target: '_blank', rel: 'noopener', role: 'listitem',
+      const tile = el(safe(j.url) ? 'a' : 'span', { href: safe(j.url), target: '_blank', rel: 'noopener', role: 'listitem',
         style: { background: resultColor[j.result] || 'var(--gone)', opacity: j.result === 'success' ? 0.55 : 1 },
         'aria-label': `${short(j.repo)} ${j.job} ${j.result}` });
       tiles.append(hoverable(tile, () => tipFor({ ...j, s: j.started, e: j.finished }, 0)));
@@ -408,7 +410,7 @@
   function reportHeight() {
     const height = Math.ceil(document.documentElement.scrollHeight);
     window.webkit?.messageHandlers?.lanes?.postMessage({ height });
-    if (host === 't3') parent.postMessage({ type: 'lanes-height', height }, '*');
+    if (host === 'embed') parent.postMessage({ type: 'lanes-height', height }, '*');
   }
 
   function render() {
@@ -457,7 +459,7 @@
     const toggle = ev.ctrlKey && ev.shiftKey && !ev.metaKey && !ev.altKey && ev.code === 'KeyC';
     if (ev.key !== 'Escape' && !toggle) return;
     ev.preventDefault();
-    if (host === 't3') parent.postMessage({ type: 'lanes-close' }, '*');
+    if (host === 'embed') parent.postMessage({ type: 'lanes-close' }, '*');
     window.webkit?.messageHandlers?.lanes?.postMessage({ close: true });
   });
   let resizeTimer;

@@ -4,6 +4,7 @@
 
 # port = 8792            # the page and data, on 127.0.0.1 only unless you set listen
 # listen = "127.0.0.1"   # keep it local and reach it through an SSH tunnel; a LAN address shows it to your network
+# hosts = ["hub.lan"]    # other names you open it by (requests for any other name are refused)
 
 [[machines]]
 name = "build-01"

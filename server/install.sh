@@ -10,6 +10,10 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "lanes n
 install -Dm755 lanes "$HOME/.local/bin/lanes"
 install -Dm644 lanes.html "$HOME/.local/share/lanes/lanes.html"
 echo "installed ~/.local/bin/lanes $("$HOME/.local/bin/lanes" --version)"
+# The agent reads runner output from the system journal, which needs the systemd-journal (or adm) group.
+if ! id -nG | grep -qwE 'systemd-journal|adm|wheel|root'; then
+  echo "note: $USER can't read the system journal, so runner jobs won't show. Run: sudo usermod -aG systemd-journal $USER"
+fi
 
 [[ "${1:-}" == "--hub" ]] || exit 0
 
@@ -20,7 +24,8 @@ if [[ ! -f $config ]]; then
 fi
 install -Dm644 lanes.service "$HOME/.config/systemd/user/lanes.service"
 systemctl --user daemon-reload
-systemctl --user enable --now lanes.service
+systemctl --user enable lanes.service
+systemctl --user restart lanes.service      # picks up a newer lanes on reinstall
 # Keep the hub running while you're logged out.
 loginctl enable-linger "$USER" 2>/dev/null || echo "run 'sudo loginctl enable-linger $USER' so the hub runs while you're logged out"
 echo "lanes hub is running: http://127.0.0.1:8792/"

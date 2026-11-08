@@ -33,9 +33,10 @@ six hours went.
 └────────────┘              └──────────────────────────┘          └─────────────────────┘
 ```
 
-- `lanes agent` reads one machine. It finds GitHub runners installed as systemd services (what `svc.sh install`
-  sets up), reads their output from the journal ("Running job: …", "Job … completed with result: …"), and adds load
-  and free memory. It prints JSON and exits.
+- `lanes agent` reads one Linux machine. It finds GitHub runners installed as systemd services (what `svc.sh
+  install` sets up), reads their output from the system journal ("Running job: …", "Job … completed with result:
+  …"), and adds load and free memory. It prints JSON and exits. Its user needs to read the journal: be in the
+  `systemd-journal` (or `adm`) group, or no jobs show. The installer says so if you aren't.
 - `lanes hub` runs the agent on every machine in its config every 5 seconds: itself directly, the others over SSH.
   It serves the panel page and the merged data.
 - The Mac app shows that page in a panel and draws the glyph from the same data.
@@ -44,7 +45,8 @@ The server is one Python file (3.11+, standard library only). The app is one Swi
 
 ## Set up
 
-**1. Every machine with runners.** Clone this repo and install the `lanes` command:
+**1. Every machine with runners** (Linux with systemd, Python 3.11+). Clone this repo and install the `lanes`
+command:
 
 ```sh
 git clone https://github.com/hunterbohm/lanes && lanes/server/install.sh
@@ -89,7 +91,8 @@ python3 lanes/server/lanes demo        # made-up machines and jobs on http://127
 ## Adding your own data
 
 Runners that aren't systemd services, cloud runners, or a job queue of your own can be added with **sources**:
-commands the agent runs, listed in `~/.config/lanes/agent.toml` on that machine:
+commands the agent runs, listed in `~/.config/lanes/agent.toml` on that machine. Each runs through the shell as the
+agent's user, like a crontab line, and gets 30 seconds:
 
 ```toml
 # runner_services = false   # skip systemd runner discovery
@@ -117,15 +120,20 @@ A source prints one JSON object. Every key is optional:
 ```
 
 `state` is `running` or `starting`. `result` is `success`, `failure` or `cancelled`. Times are Unix seconds.
+Only `http(s)` links are kept.
 
 ## Notes
 
 - The data the hub serves includes your repo and job names. Keep it on `127.0.0.1` and reach it through SSH, as
-  above, unless your network is private.
+  above, unless your network is private. It answers only requests addressed to `127.0.0.1`, `localhost`, its
+  `listen` address, or a name listed in `hosts`, so a web page can't read it by pointing its own domain at your
+  machine.
 - Runs are matched to their usual time by repo and job name, using successful runs from the last 6 hours.
 - Load samples are kept for 2 hours in `~/.local/state/lanes/samples.json` on the hub.
-- The page also works on its own in any browser. Add `?in=…` when embedding it: it then leaves the background to
-  its host and posts `{type: "lanes-height"}` and `{type: "lanes-close"}` messages to the parent window.
+- The page also works on its own in any browser. To show it in an iframe inside another app, load `/?in=embed`.
+  It then leaves the background to its host and posts `{type: "lanes-height", height}` and
+  `{type: "lanes-close"}` (on Esc) to the parent window.
+- The app allows plain-HTTP loads because the hub speaks plain HTTP. Nothing else is loaded.
 
 ## License
 

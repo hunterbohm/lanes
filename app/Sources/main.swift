@@ -66,6 +66,12 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
     var closedAt = Date.distantPast
     var outsideClicks: Any?
 
+    // Registered before launch finishes, so the lanes:// link that launched the app isn't lost.
+    func applicationWillFinishLaunching(_ note: Notification) {
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(openURL(_:reply:)),
+                                                     forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
     func applicationDidFinishLaunching(_ note: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.imagePosition = .imageLeading
@@ -105,8 +111,6 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
         panel.delegate = self
         loadPage()
 
-        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(openURL(_:reply:)),
-                                                     forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
         draw()
         fetch()
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.fetch() }
@@ -176,9 +180,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
         show()
     }
 
-    /// Where the panel's top-center goes. Under the glyph when the click came from the macOS menu bar; otherwise
-    /// (HyprMac/OmniWM-style bars press the hidden item over Accessibility, or lanes://toggle from a hotkey) under the
-    /// pointer if it is near the top of a screen, else the top-right of the pointer's screen.
+    /// Where the panel's top-center goes. Under the glyph when the click came from the macOS menu bar. Otherwise (a
+    /// custom bar pressed the hidden menu bar item through Accessibility, or lanes://toggle came from a hotkey) under
+    /// the pointer if it is near the top of a screen, else at the top-right of the pointer's screen.
     func anchor() -> NSPoint {
         let mouse = NSEvent.mouseLocation
         if let event = NSApp.currentEvent, event.type == .leftMouseUp, let button = item.button, let window = button.window,
@@ -261,19 +265,24 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
         }
     }
 
-    // Links (a job's GitHub page) open in the default browser, never inside the panel.
+    // Links (a job's GitHub page) open in the default browser, never inside the panel. Only web links: the page's
+    // data comes from agents and sources, so anything else (file:, other apps' schemes) is ignored.
+    func openWebLink(_ url: URL?) {
+        guard let url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+        NSWorkspace.shared.open(url)
+        close()
+    }
+
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let url = action.request.url { NSWorkspace.shared.open(url) }
-        close()
+        openWebLink(action.request.url)
         return nil
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         if action.navigationType == .linkActivated, let url = action.request.url, url.host != server.host {
-            NSWorkspace.shared.open(url)
-            close()
+            openWebLink(url)
             decisionHandler(.cancel)
         } else {
             decisionHandler(.allow)
@@ -284,8 +293,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
         if webView.url?.scheme?.hasPrefix("http") == true { pageFailed = false }    // not the error page
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code == NSURLErrorCancelled { return }     // a newer load replaced this one
         pageFailed = true
-        let address = server.absoluteString.replacingOccurrences(of: "<", with: "&lt;")
+        let address = server.absoluteString.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
         webView.loadHTMLString("""
             <body style="font:13px -apple-system;color:#888;text-align:center;padding:48px 24px;margin:0">
             <b style="color:CanvasText;display:block;margin-bottom:6px">Can't reach the Lanes hub</b>

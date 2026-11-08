@@ -12,7 +12,8 @@ install=0 tunnel=""
 while (($#)); do
   case $1 in
     --install) install=1 ;;
-    --tunnel) tunnel=${2:?--tunnel needs a host}; shift ;;
+    --tunnel) tunnel=${2:?--tunnel needs a host}; shift
+              [[ $tunnel =~ ^[A-Za-z0-9._@:-]+$ && $tunnel != -* ]] || { echo "--tunnel: give a host name, user@host or ~/.ssh/config name" >&2; exit 2; } ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
   shift
@@ -53,7 +54,7 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>CFBundleURLName</key><string>$id</string>
     <key>CFBundleURLSchemes</key><array><string>lanes</string></array>
   </dict></array>
-  <!-- The hub is plain HTTP on 127.0.0.1 (through a tunnel) or on your own network. -->
+  <!-- The hub speaks plain HTTP: on 127.0.0.1 through a tunnel, or at an address you set on your own network. -->
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict>
 </dict></plist>
 EOF
@@ -87,7 +88,7 @@ if [[ -n $tunnel ]]; then
     <string>-o</string><string>ServerAliveInterval=15</string>
     <string>-o</string><string>ServerAliveCountMax=3</string>
     <string>-L</string><string>127.0.0.1:8792:127.0.0.1:8792</string>
-    <string>$tunnel</string>
+    <string>--</string><string>$tunnel</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
