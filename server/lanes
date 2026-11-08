@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """lanes: see what every GitHub Actions runner on every one of your machines is doing, from one place.
 
-  lanes agent              print this machine's CI as JSON: the job each runner service is running, the jobs that
-                           finished in the last 6 hours, load, memory, and whatever the sources in
-                           ~/.config/lanes/agent.toml add.
+  lanes agent              print this machine's CI as JSON: the job each runner service (systemd on Linux, launchd on
+                           macOS) is running, the jobs that finished in the last 6 hours, load, memory, and whatever
+                           the sources in ~/.config/lanes/agent.toml add.
   lanes hub [CONFIG]       every 5 seconds, run the agent on each machine in CONFIG (default ~/.config/lanes/hub.toml;
                            over SSH for remote ones) and serve the charts page at http://127.0.0.1:8792/ and the data
-                           at /status.json. The Lanes menu bar app shows the page.
+                           at /status.json. The Lanes menu bar app shows the page. The machine list can come from a
+                           command (`machines_command`), re-read every minute.
   lanes demo               serve the charts page with made-up data, to try the app without a fleet.
 
 It only reads: it never starts, stops or changes a runner. Python 3.11+, no packages to install.
@@ -16,6 +17,7 @@ from __future__ import annotations
 import calendar
 import json
 import os
+import plistlib
 import random
 import re
 import shlex
@@ -31,12 +33,13 @@ except ImportError:      # Python before 3.11: only `lanes demo` works
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "lanes"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "lanes"
 PAGE_PLACES = (Path(__file__).resolve().parent / "lanes.html", Path.home() / ".local/share/lanes/lanes.html")
 RECENT_S = 6 * 3600              # finished jobs are kept this long
 REFRESH_S = 5
+LIST_EVERY_S = 60               # how often `machines_command` is re-run
 SAMPLE_EVERY_S = 30              # load samples for the sparklines, kept 2 hours
 SAMPLES_KEPT = 240
 RESULTS = {"succeeded": "success", "success": "success", "failed": "failure", "failure": "failure",
@@ -97,28 +100,62 @@ def run(args: list, timeout: float = 20) -> str:
         return ""
 
 
-def runner_services(now: float) -> tuple:
-    """Jobs from GitHub runners installed as systemd services (`svc.sh install` names them actions.runner.*)."""
+def systemd_runners() -> list:
+    """(name, folder, log lines) for GitHub runners installed as systemd services (`svc.sh install` on Linux names
+    them actions.runner.*). Their output is in the system journal."""
+    found = []
     units = [line.split()[0] for line in run(["systemctl", "list-units", "--all", "--plain", "--no-legend",
                                               "actions.runner.*.service"]).splitlines() if line.strip()]
-    workers = run(["pgrep", "-af", "Runner.Worker"])
-    jobs, recent = [], []
     for unit in units:
         folder = run(["systemctl", "show", "-P", "WorkingDirectory", unit], 10).strip()
-        if not folder:
+        if folder:
+            lines = run(["journalctl", "--no-pager", "-o", "cat", "-u", unit,
+                         "--since", f"-{RECENT_S // 3600 + 1}h"]).splitlines()
+            found.append((unit.removeprefix("actions.runner.").removesuffix(".service"), folder, lines))
+    return found
+
+
+def launchd_runners() -> list:
+    """(name, folder, log lines) for GitHub runners installed as launchd services (`svc.sh install` on macOS). Each
+    plist names the runner's folder and the file its output goes to."""
+    found = []
+    plists = [*Path.home().glob("Library/LaunchAgents/actions.runner.*.plist"),
+              *Path("/Library/LaunchDaemons").glob("actions.runner.*.plist")]
+    for plist in sorted(plists):
+        try:
+            info = plistlib.loads(plist.read_bytes())
+            folder = info["WorkingDirectory"]
+        except (OSError, ValueError, KeyError):
             continue
+        lines = []
+        try:
+            with open(info.get("StandardOutPath", ""), "rb") as log:      # the file only grows; its end is enough
+                log.seek(0, os.SEEK_END)
+                log.seek(max(0, log.tell() - 2**21))
+                lines = log.read().decode("utf-8", "replace").splitlines()
+        except OSError:
+            pass
+        found.append((plist.stem.removeprefix("actions.runner."), folder, lines))
+    return found
+
+
+def runner_services(now: float) -> tuple:
+    """Jobs from GitHub runners installed as services."""
+    found = launchd_runners() if sys.platform == "darwin" else systemd_runners()
+    workers = [line for line in run(["ps", "axww", "-o", "command="]).splitlines() if "Runner.Worker" in line]
+    jobs, recent = [], []
+    for service, folder, lines in found:
         try:
             info = json.loads(Path(folder, ".runner").read_text(encoding="utf-8-sig"))
             url, name = info["gitHubUrl"].rstrip("/"), info.get("agentName", "")
         except (OSError, ValueError, KeyError):
-            url, name = None, unit.removeprefix("actions.runner.").removesuffix(".service")
+            url, name = None, service
         owner_repo = url.removeprefix("https://github.com/") if url else name
         link = f"{url}/actions" if url and owner_repo.count("/") == 1 else url
-        events = runner_events(run(["journalctl", "--no-pager", "-o", "cat", "-u", unit,
-                                    "--since", f"-{RECENT_S // 3600 + 1}h"]).splitlines())
+        events = runner_events(lines)
         job, since = running_job(events)
-        # The journal can end on 'Running job' after a crash; a job runs only while the runner has a Worker process.
-        if job and f" {folder}/" in workers:
+        # The log can end on 'Running job' after a crash; a job runs only while the runner has a Worker process.
+        if job and any(f"{folder.rstrip('/')}/" in worker for worker in workers):
             jobs.append({"repo": owner_repo, "job": job, "state": "running", "since": since, "label": name, "url": link})
         recent += [{"repo": owner_repo, "job": j, "result": r, "started": s, "finished": e, "label": name, "url": link}
                    for s, e, j, r in finished_jobs(events) if now - e < RECENT_S]
@@ -148,6 +185,11 @@ def run_source(command: str) -> dict:
 
 
 def mem_free_gib() -> float | None:
+    if sys.platform == "darwin":            # free, inactive and speculative pages: what macOS can hand out now
+        out = run(["vm_stat"], 5)
+        page = re.search(r"page size of (\d+) bytes", out)
+        pages = re.findall(r"^Pages (?:free|inactive|speculative):\s+(\d+)", out, re.M)
+        return round(sum(map(int, pages)) * int(page.group(1)) / 2**30, 1) if page and pages else None
     try:
         for line in Path("/proc/meminfo").read_text().splitlines():
             if line.startswith("MemAvailable:"):
@@ -188,6 +230,8 @@ class Hub:
 
     def __init__(self, config: dict) -> None:
         self.machines = config.get("machines") or [{"name": socket.gethostname()}]
+        self.machines_command = config.get("machines_command")
+        self.listed_at = 0.0
         self.snaps: dict = {}
         # Served until the first pass finishes (a second or two; SSH can take longer).
         self.body = json.dumps({"version": VERSION, "updated": int(time.time()), "running": 0, "starting": 0,
@@ -217,10 +261,35 @@ class Hub:
             return {"error": f"agent failed: {reason}"}
         return snap if isinstance(snap, dict) else {"error": "agent sent something other than a JSON object"}
 
+    def list_machines(self, now: float) -> None:
+        """With `machines_command`, the machine list comes from a command (re-run every minute), so a machine added
+        to your inventory shows up without editing hub.toml. While it fails or lists nothing, the last list stays."""
+        if not self.machines_command or now - self.listed_at < LIST_EVERY_S:
+            return
+        self.listed_at = now
+        try:
+            listed = run_source(self.machines_command).get("machines")
+        except (subprocess.TimeoutExpired, ValueError, OSError) as error:
+            print(f"machines_command failed ({type(error).__name__}); keeping the last machine list", file=sys.stderr, flush=True)
+            return
+        machines, seen = [], set()
+        for m in listed if isinstance(listed, list) else []:
+            if not (isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"] and m["name"] not in seen):
+                continue
+            seen.add(m["name"])
+            machines.append({k: v for k, v in m.items() if k in ("name", "ssh", "command", "ssh_options") and isinstance(v, str)})
+        if not machines:
+            print("machines_command listed no machines; keeping the last machine list", file=sys.stderr, flush=True)
+        elif machines != self.machines:
+            print(f"machines: {', '.join(m['name'] for m in machines)}", file=sys.stderr, flush=True)
+            self.machines = machines
+
     def refresh(self) -> None:
         now = time.time()
+        self.list_machines(now)
+        configured = self.machines
         threads = [threading.Thread(target=lambda m=m: self.snaps.__setitem__(m["name"], self.read(m)))
-                   for m in self.machines]
+                   for m in configured]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -236,7 +305,7 @@ class Hub:
             return by_name[name]
 
         virtuals: list = []
-        snaps = [(m, self.snaps.get(m["name"], {"error": "not checked yet"})) for m in self.machines]
+        snaps = [(m, self.snaps.get(m["name"], {"error": "not checked yet"})) for m in configured]
         for m, snap in snaps:
             if "error" in snap:
                 by_name[m["name"]] = {"name": m["name"], "ok": False, "error": str(snap["error"]), "jobs": []}

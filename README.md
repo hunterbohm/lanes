@@ -33,10 +33,12 @@ six hours went.
 └────────────┘              └──────────────────────────┘          └─────────────────────┘
 ```
 
-- `lanes agent` reads one Linux machine. It finds GitHub runners installed as systemd services (what `svc.sh
-  install` sets up), reads their output from the system journal ("Running job: …", "Job … completed with result:
-  …"), and adds load and free memory. It prints JSON and exits. Its user needs to read the journal: be in the
-  `systemd-journal` (or `adm`) group, or no jobs show. The installer says so if you aren't.
+- `lanes agent` reads one machine. It finds the GitHub runners installed as services (what `svc.sh install` sets
+  up), reads what they print ("Running job: …", "Job … completed with result: …"), and adds load and free memory. It
+  prints JSON and exits.
+  - **Linux:** systemd services, whose output is in the system journal. Its user needs to read the journal: be in
+    the `systemd-journal` (or `adm`) group, or no jobs show. The installer says so if you aren't.
+  - **macOS:** launchd services, whose output goes to the log file their plist names.
 - `lanes hub` runs the agent on every machine in its config every 5 seconds: itself directly, the others over SSH.
   It serves the panel page and the merged data.
 - The Mac app shows that page in a panel and draws the glyph from the same data.
@@ -45,15 +47,15 @@ The server is one Python file (3.11+, standard library only). The app is one Swi
 
 ## Set up
 
-**1. Every machine with runners** (Linux with systemd, Python 3.11+). Clone this repo and install the `lanes`
-command:
+**1. Every machine with runners** (Linux with systemd, or macOS; Python 3.11+). Clone this repo and install the
+`lanes` command:
 
 ```sh
 git clone https://github.com/hunterbohm/lanes && lanes/server/install.sh
 ```
 
-**2. One machine as the hub.** It can be one of the runner machines. It needs SSH access, without a password prompt,
-to the others:
+**2. One Linux machine as the hub.** It can be one of the runner machines. It needs SSH access, without a password
+prompt, to the others:
 
 ```sh
 lanes/server/install.sh --hub          # a systemd user service, and ~/.config/lanes/hub.toml to edit
@@ -62,6 +64,10 @@ systemctl --user restart lanes
 ```
 
 Open `http://127.0.0.1:8792/` on the hub, or `curl` it, to check.
+
+If you already keep a list of your machines somewhere (an inventory file, Ansible, Tailscale tags), set
+`machines_command` in `hub.toml` to a command that prints them as `{"machines": [{"name": …, "ssh": …}]}`. The hub
+re-runs it every minute, so a new machine shows up without editing `hub.toml`.
 
 **3. Your Mac** (macOS 13+, Xcode command line tools):
 

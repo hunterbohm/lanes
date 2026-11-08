@@ -14,3 +14,8 @@ name = "build-02"
 ssh = "build-02"                         # anything `ssh HOST` accepts: a host, user@host, or a ~/.ssh/config name
 # command = "~/.local/bin/lanes agent"   # where lanes is installed there (this is the default)
 # ssh_options = "-p 2222"
+
+# Or let a command list the machines, so a machine added to your own inventory shows up on its own. The hub runs it
+# through the shell every minute and expects {"machines": [{"name": …, "ssh": …}, …]} (same fields as above). While
+# it fails or lists nothing, the last list stays, starting with the [[machines]] above.
+# machines_command = "~/bin/list-ci-machines"
