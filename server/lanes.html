@@ -133,6 +133,11 @@
   .c-title { font-size: 13px; font-weight: 600; line-height: 1.35; }
   .c-title.bad { color: var(--bad); }
   .c-sub { color: var(--ink-3); font-size: 11px; margin-top: 1px; font-variant-numeric: tabular-nums; }
+  .c-sub.bad { color: var(--bad); font-weight: 600; }
+  .mt.trouble .mt-row { background: color-mix(in srgb, var(--bad) 9%, transparent); }
+  .mt.trouble .mt-row:hover { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+  .run.fail { grid-template-columns: 8px minmax(0, 1fr) auto; }
+  .run.fail .bad-i { font-size: 11px; font-weight: 700; }
   .c-head .fresh { margin: 2px 0 0 auto; white-space: nowrap; }
   .c-label { font-size: 11px; font-weight: 600; color: var(--ink-2); margin: 16px 0 4px; display: flex; gap: 8px; }
   .c-label span:last-child { margin-left: auto; font-weight: 400; }
@@ -588,19 +593,40 @@
     return temps.length ? Math.max(...temps) : null;
   };
 
-  function compactHead() {
-    const hot = real().filter((m) => m.hot);
-    const down = real().filter((m) => !m.ok);
+  // What needs attention, most urgent first: a hot or silent machine, then a CI job that just failed, then CI jobs
+  // running, then a warm machine. The top line says the first; the line under it says the other half.
+  const FAILED_RECENT_S = 30 * 60;
+  const recentFailures = (now) => status.history.filter((j) => j.result === 'failure' && now - j.finished < FAILED_RECENT_S).reverse();
+
+  function machineSummary() {
+    const hot = real().filter((m) => m.hot), down = real().filter((m) => !m.ok);
     const warm = real().filter((m) => m.ok && !m.hot && heatOf(m) >= WARM_C);
-    let title, bad = false;
-    if (hot.length) { title = hot.map((m) => `▲ ${m.name} is running hot: ${m.hot}`).join('\n'); bad = true; }
-    else if (down.length) { title = `▲ ${down.map((m) => m.name).join(', ')} not answering`; bad = true; }
-    else if (warm.length) title = `${warm.map((m) => `${m.name} is warm (${Math.round(heatOf(m))}°C)`).join(', ')}; the rest normal`;
-    else title = `All ${real().length} machines normal`;
-    const jobs = status.running;
-    const sub = `${jobs} CI job${jobs === 1 ? '' : 's'} running${status.starting ? ` · ${status.starting} starting` : ''}`;
+    const trouble = [...hot.map((m) => `▲ ${m.name} is running hot: ${m.hot}`), ...down.map((m) => `▲ ${m.name} is not answering`)];
+    if (trouble.length) return { text: trouble.join('\n'), bad: true };
+    if (warm.length) return { text: `${warm.map((m) => `${m.name} is warm (${Math.round(heatOf(m))}°C)`).join(', ')}; the rest normal` };
+    return { text: `All ${real().length} machines normal`, calm: true };
+  }
+
+  function ciSummary(now) {
+    const failed = recentFailures(now), running = status.running;
+    if (failed.length) {
+      const f = failed[0];
+      return { text: failed.length === 1 ? `✗ ${short(f.repo)} ${f.job} failed ${dur(now - f.finished)} ago` : `✗ ${failed.length} CI jobs failed in the last 30 minutes`,
+        bad: true, active: true, also: running ? `${running} running` : null };
+    }
+    if (running) return { text: `${running} CI job${running === 1 ? '' : 's'} running${status.starting ? ` · ${status.starting} starting` : ''}`, active: true };
+    if (status.starting) return { text: `${status.starting} CI job${status.starting === 1 ? '' : 's'} starting`, active: true };
+    return { text: 'No CI jobs running', calm: true };
+  }
+
+  function compactHead(now) {
+    const mach = machineSummary(), ci = ciSummary(now);
+    const ciFirst = !mach.bad && (ci.bad || ci.active);
+    const [top, under] = ciFirst ? [ci, mach] : [mach, ci];
+    const subText = under === ci && ci.also ? `${ci.text} · ${ci.also}` : under.text;
     return el('div', { class: 'c-head' },
-      el('div', {}, el('div', { class: `c-title${bad ? ' bad' : ''}`, style: { whiteSpace: 'pre-line' }, text: title }), el('div', { class: 'c-sub', text: sub })),
+      el('div', {}, el('div', { class: `c-title${top.bad ? ' bad' : ''}`, style: { whiteSpace: 'pre-line' }, text: top.text }),
+        el('div', { class: `c-sub${under.bad ? ' bad' : ''}`, text: subText })),
       el('div', { class: 'fresh' }));
   }
 
@@ -657,7 +683,7 @@
   function machineTable() {
     const wrap = el('div', {}, el('div', { class: 'mt-cols' }, el('span'), ...['CPU', 'GPU', 'Memory', 'Heat'].map((t) => el('span', { text: t })), el('span')));
     for (const m of real()) {
-      const block = el('div', { class: `mt${opened.has(m.name) ? ' open' : ''}` });
+      const block = el('div', { class: `mt${opened.has(m.name) ? ' open' : ''}${m.hot || !m.ok ? ' trouble' : ''}` });
       const name = el('div', { class: 'mt-name' }, el('div', { class: 'mname' }, el('span', { class: 'dot', style: { background: color(m.name) } }), m.name));
       let cells;
       if (!m.ok) {
@@ -701,8 +727,21 @@
     } else {
       line.append(el('span', { text: 'No jobs finished in the last 6 hours.' }));
     }
-    const out = [line];
-    if (status.machines.some((m) => m.jobs.length)) out.push(el('div', { style: { marginTop: '6px' } }, runningList(now)));
+    const out = [];
+    const lately = recentFailures(now);
+    if (lately.length) {
+      const list = el('div', { style: { marginBottom: '6px' } });
+      for (const j of lately.slice(0, 3)) {
+        const row = el(safe(j.url) ? 'a' : 'div', { class: 'run fail', href: safe(j.url), target: '_blank', rel: 'noopener' },
+          el('span', { class: 'bad-i', text: '✗' }),
+          el('div', { class: 'what' }, el('b', { text: short(j.repo) }), el('span', { text: `  ${j.job}` })),
+          el('div', { class: 'when', text: `${dur(now - j.finished)} ago · ${j.machine}` }));
+        list.append(hoverable(row, () => tipFor({ ...j, s: j.started, e: j.finished }, now)));
+      }
+      out.push(list);
+    }
+    if (status.machines.some((m) => m.jobs.length)) out.push(el('div', { style: { marginBottom: '6px' } }, runningList(now)));
+    out.push(line);
     for (const m of status.machines.filter((v) => v.virtual && v.meter && v.meter.max)) {
       const share = m.meter.value / m.meter.max;
       out.push(el('div', { class: 'vrow' }, el('div', { class: 'mname' }, el('span', { class: 'dot', style: { background: color(m.name) } }), m.name),
@@ -712,13 +751,15 @@
     return out;
   }
 
+  // Whichever half needs attention comes first: CI while jobs run or one just failed, unless a machine is in trouble.
   function renderCompact(now) {
+    const machines = [el('div', { class: 'c-label' }, el('span', { text: 'Machines' }), el('span', { text: 'click a machine for its last 2 hours' })),
+      machineTable()];
+    const ci = [el('div', { class: 'c-label' }, el('span', { text: 'CI' }), el('span', { text: 'last 6 hours' })), ...ciBrief(now)];
+    const ciFirst = !machineSummary().bad && ciSummary(now).active;
     app.replaceChildren(
-      compactHead(),
-      el('div', { class: 'c-label' }, el('span', { text: 'Machines' }), el('span', { text: 'click a machine for its last 2 hours' })),
-      machineTable(),
-      el('div', { class: 'c-label' }, el('span', { text: 'CI' }), el('span', { text: 'last 6 hours' })),
-      ...ciBrief(now),
+      compactHead(now),
+      ...(ciFirst ? [...ci, ...machines] : [...machines, ...ci]),
       el('div', { class: 'foot' }, el('a', { href: `${location.origin}/`, target: '_blank', rel: 'noopener', text: 'Open full view ↗' }),
         el('span', { text: 'Esc to close' })),
     );
