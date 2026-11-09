@@ -102,7 +102,7 @@ export function workflowEditProblem(oldText, newText, pins = []) {
   const was = oldText.split("\n");
   const now = newText.split("\n");
   if (was.length !== now.length) return "lines were added or removed";
-  const scripts = new Set([...scriptLines(was), ...scriptLines(now)]);
+  const scripts = new Set([...scriptLines(was), ...quotedLines(was), ...scriptLines(now), ...quotedLines(now)]);
   for (let i = 0; i < now.length; i++) {
     if (was[i] === now[i]) continue;
     const where = `line ${i + 1}: ${now[i].trim().slice(0, 100)}`;
@@ -131,8 +131,8 @@ function usesKey(lines, i) {
   const up = parent(lines, i);
   if (up < 0) return false;
   const isSteps = (j) => j >= 0 && /^\s*steps:\s*(?:#.*)?$/.test(strip(lines[j]));
-  if (/^\s*-\s/.test(lines[i])) return isSteps(up);
-  if (/^\s*-\s/.test(lines[up])) return isSteps(parent(lines, up));
+  if (/^\s*-\s/.test(lines[i])) return isSteps(owner(lines, i));
+  if (/^\s*-\s/.test(lines[up])) return isSteps(owner(lines, up));
   const jobs = parent(lines, up);
   return jobs >= 0 && /^jobs:\s*(?:#.*)?$/.test(strip(lines[jobs]));
 }
@@ -169,6 +169,57 @@ function parent(lines, i) {
     if (indent(lines[j]) < indent(lines[i])) return j;
   }
   return -1;
+}
+
+function owner(lines, i) {
+  // The key a `- ` item belongs to. YAML lets the dash sit at the key's own indentation
+  // (`steps:` then `- uses:` in the same column), so a same-column line that is not another item counts.
+  for (let j = i - 1; j >= 0; j--) {
+    if (!lines[j].trim() || lines[j].trim().startsWith("#")) continue;
+    if (indent(lines[j]) < indent(lines[i]) || (indent(lines[j]) === indent(lines[i]) && !/^\s*-(?:\s|$)/.test(lines[j]))) return j;
+  }
+  return -1;
+}
+
+function quotedLines(lines) {
+  // Lines inside a quoted string that spans lines (`run: "echo a` ... `b"`). YAML folds them into one
+  // value, so their text is not workflow keys, and a `#` added there would comment out the rest.
+  const out = new Set();
+  const scripts = scriptLines(lines);
+  const close = (line, from, q) => {
+    for (let k = from; k < line.length; k++) {
+      if (q === '"' && line[k] === "\\") k++;
+      else if (line[k] === q && q === "'" && line[k + 1] === "'") k++;
+      else if (line[k] === q) return k;
+    }
+    return -1;
+  };
+  let open = null;
+  lines.forEach((line, i) => {
+    if (scripts.has(i)) return;
+    let k = 0;
+    if (open) {
+      out.add(i);
+      k = close(line, 0, open);
+      if (k < 0) return;
+      open = null;
+      k++;
+    }
+    for (; k < line.length; k++) {
+      if (line[k] === "#" && (k === 0 || /\s/.test(line[k - 1]))) break;
+      // A quote opens a string only where a value starts: after `key: `, `- `, `[`, `{` or `,`,
+      // and any anchor or tag (`&script`, `!!str`).
+      if ((line[k] === '"' || line[k] === "'") && /(?:^|[:,[{]|(?:^|\s)-)\s*(?:[&!]\S*\s+)*$/.test(line.slice(0, k))) {
+        const end = close(line, k + 1, line[k]);
+        if (end < 0) {
+          open = line[k];
+          break;
+        }
+        k = end;
+      }
+    }
+  });
+  return out;
 }
 
 function scriptLines(lines) {
