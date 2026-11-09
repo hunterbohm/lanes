@@ -181,42 +181,37 @@ function owner(lines, i) {
   return -1;
 }
 
+const VALUE_START = /^\s*(?:-\s+)*(?:(?:[^\s#'"-][^#]*?|"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')\s*:\s+)?(?:[&!]\S*\s+)*$/;
+
 function quotedLines(lines) {
-  // Lines inside a quoted string that spans lines (`run: "echo a` ... `b"`). YAML folds them into one
-  // value, so their text is not workflow keys, and a `#` added there would comment out the rest.
+  // Lines inside a quoted string or a `{...}` / `[...]` collection that spans lines (`run: "echo a`
+  // ... `b"`, `- {"run":"echo a` ... `"}`). YAML joins those lines into one value, so their text is
+  // not workflow keys, and a `#` added there could comment out the rest of a script.
   const out = new Set();
   const scripts = scriptLines(lines);
-  const close = (line, from, q) => {
-    for (let k = from; k < line.length; k++) {
-      if (q === '"' && line[k] === "\\") k++;
-      else if (line[k] === q && q === "'" && line[k + 1] === "'") k++;
-      else if (line[k] === q) return k;
-    }
-    return -1;
-  };
-  let open = null;
+  let quote = null;
+  let depth = 0;
   lines.forEach((line, i) => {
     if (scripts.has(i)) return;
-    let k = 0;
-    if (open) {
-      out.add(i);
-      k = close(line, 0, open);
-      if (k < 0) return;
-      open = null;
-      k++;
-    }
-    for (; k < line.length; k++) {
-      if (line[k] === "#" && (k === 0 || /\s/.test(line[k - 1]))) break;
-      // A quote opens a string only where a value starts: after `key: `, `- `, `[`, `{` or `,`,
-      // and any anchor or tag (`&script`, `!!str`).
-      if ((line[k] === '"' || line[k] === "'") && /(?:^|[:,[{]|(?:^|\s)-)\s*(?:[&!]\S*\s+)*$/.test(line.slice(0, k))) {
-        const end = close(line, k + 1, line[k]);
-        if (end < 0) {
-          open = line[k];
-          break;
-        }
-        k = end;
+    if (quote || depth) out.add(i);
+    for (let k = 0; k < line.length; k++) {
+      const ch = line[k];
+      if (quote) {
+        if (quote === '"' && ch === "\\") k++;
+        else if (quote === "'" && ch === "'" && line[k + 1] === "'") k++;
+        else if (ch === quote) quote = null;
+        continue;
       }
+      if (ch === "#" && (k === 0 || /\s/.test(line[k - 1]))) break;
+      // A quote or bracket starts a value only where one can start: in a block, after the indent,
+      // any `- `, a `key: ` and any anchor or tag (`&script`, `!!str`); inside brackets, after
+      // `[`, `{`, `,` or `:`, or at the start of a line. Elsewhere, as in `run: echo "::endgroup::"`,
+      // it is just text.
+      const before = line.slice(0, k);
+      const start = depth ? /(?:^|[[{,:])\s*(?:[&!]\S*\s+)*$/.test(before) : VALUE_START.test(before);
+      if ((ch === '"' || ch === "'") && start) quote = ch;
+      else if ((ch === "{" || ch === "[") && (depth || start)) depth++;
+      else if ((ch === "}" || ch === "]") && depth) depth--;
     }
   });
   return out;
