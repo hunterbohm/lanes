@@ -188,6 +188,32 @@ class MachineUsage(unittest.TestCase):
         _, samples = self.hub({"load": 2.5, "cpu": 40.0, "cpuTemp": 70, "gpus": [{"busy": 10.0}, {"busy": 60.0}]})
         self.assertEqual(samples[-1]["m"], {"load": 2.5, "cpu": 40.0, "gpu": 60.0, "temp": 70})
 
+    def test_samples_keep_memory_used(self):
+        _, samples = self.hub({"memFreeGiB": 24.0, "memGiB": 32.0})
+        self.assertEqual(samples[-1]["m"], {"mem": 25.0})
+
+    def test_program_with_empty_cmdline_uses_its_short_name(self):
+        if not hasattr(lanes, "usage_linux"):
+            self.fail("the agent reads no CPU")
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        hz = os.sysconf("SC_CLK_TCK")
+        first = (0, 0, 100.0, {"20": [0, 10]})
+        later = (500, 1000, 101.0, {"20": [hz, 10]})
+
+        def fake(*a):
+            if "cmdline" in str(a[0]):
+                return mock.Mock(read_bytes=lambda: b"")
+            if str(a[0]).endswith("/comm"):
+                return mock.Mock(read_text=lambda: "gvisor_sentry\n")
+            return Path(*a)
+        with mock.patch.object(lanes, "STATE_DIR", Path(state.name)), \
+                mock.patch.object(lanes, "linux_ticks", side_effect=[first, later]), \
+                mock.patch.object(lanes.time, "sleep"), \
+                mock.patch.object(lanes, "Path", side_effect=fake):
+            _, top = lanes.usage_linux()
+        self.assertEqual(top[0]["name"], "gvisor_sentry")
+
     def test_cpu_share_since_the_last_reading(self):
         if not hasattr(lanes, "usage_linux"):
             self.fail("the agent reports no CPU %")
