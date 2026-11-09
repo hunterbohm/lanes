@@ -1,0 +1,36 @@
+# Weekly test health. Copy to .github/workflows/test-health.yml next to ci.yml.
+# Lists the slowest tests and the tests that catch none of the planted bugs in one issue
+# ("Weekly test health", label test-health). An agent turns it into one reviewed cleanup PR.
+name: Test health
+
+on:
+  schedule:
+    - cron: "0 10 * * 1"  # Mondays
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","hunter-ci"]') }}
+    timeout-minutes: 120
+    env:
+      TEST_CMD: ${{ vars.TEST_CMD || 'python -m unittest discover -s tests' }}
+      MUTATION_INCLUDE: ${{ vars.MUTATION_INCLUDE }}
+      TEST_FILE_CMD: ${{ vars.TEST_FILE_CMD }}
+      # One run of the suite that writes JUnit XML to junit.xml, for test durations.
+      TEST_JUNIT_CMD: ${{ vars.TEST_JUNIT_CMD || 'python -m unittest discover -s tests' }}   # no JUnit XML: durations are skipped
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: sh -c "$TEST_JUNIT_CMD" || true
+      - run: node .github/scripts/test-quality.mjs mutation --all --out=mutation.json || true
+      - run: node .github/scripts/test-quality.mjs report --junit=junit.xml --mutation=mutation.json
