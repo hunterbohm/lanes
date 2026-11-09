@@ -63,6 +63,7 @@
   svg { display: block; overflow: visible; max-width: 100%; height: auto; }
   svg text { fill: var(--ink-3); font-size: 10px; font-variant-numeric: tabular-nums; }
   .machines { display: grid; grid-template-columns: minmax(70px, auto) 1fr auto; column-gap: 14px; row-gap: 14px; align-items: center; }
+  .machines > div { min-width: 0; }      /* a long line (busiest programs) ellipsizes instead of widening the row */
   .mname { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; white-space: nowrap; }
   .mmeta { color: var(--ink-3); font-size: 11px; margin-top: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .mmeta.err { color: var(--bad); white-space: normal; }
