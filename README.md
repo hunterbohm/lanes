@@ -15,8 +15,9 @@ six hours went.
   is running hot (CPU at 90°C or more, or a GPU at 85°C or more).
 - **Click it** for the panel:
   - jobs at once over the last 6 hours, by machine
-  - what each whole machine is doing, CI or not: CPU %, each GPU's % and memory, temperatures, the busiest programs,
-    and a 2-hour CPU sparkline (GPU dashed). A machine running hot is named at the top with its busiest program.
+  - a card per machine showing everything it is doing, CI or not: a tile each for CPU, GPU (with its memory), memory
+    and heat, each with its own 2-hour line (hover for the reading at any time), and the busiest programs as bars. A
+    machine running hot gets a red tag, a red heat tile, and a line at the top naming its busiest program.
   - every running job, with a bar showing how far along it is against that job's usual time
   - a timeline of the last hour, with a lane per machine
   - a tile for every job that finished in the last 6 hours

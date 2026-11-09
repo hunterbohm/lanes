@@ -34,7 +34,7 @@ except ImportError:      # Python before 3.11: only `lanes demo` works
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "lanes"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "lanes"
 PAGE_PLACES = (Path(__file__).resolve().parent / "lanes.html", Path.home() / ".local/share/lanes/lanes.html")
@@ -187,6 +187,19 @@ def run_source(command: str) -> dict:
     return extra
 
 
+def mem_total_gib() -> float | None:
+    if sys.platform == "darwin":
+        out = run(["sysctl", "-n", "hw.memsize"], 5).strip()
+        return round(int(out) / 2**30, 1) if out.isdigit() else None
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                return round(int(line.split()[1]) / 2**20, 1)
+    except OSError:
+        pass
+    return None
+
+
 def mem_free_gib() -> float | None:
     if sys.platform == "darwin":            # free, inactive and speculative pages: what macOS can hand out now
         out = run(["vm_stat"], 5)
@@ -286,6 +299,8 @@ def usage_linux() -> tuple:
             break
         try:
             argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace").split("\0")
+            if not argv[0]:                 # kernel threads and some sandboxes (gVisor) leave cmdline empty
+                argv = [Path(f"/proc/{pid}/comm").read_text().strip()]
         except OSError:
             continue
         top.append({"name": process_name(argv), "pid": int(pid), "cpu": round(share)})
@@ -390,7 +405,7 @@ def agent() -> dict:
     config = read_toml(CONFIG_DIR / "agent.toml")
     jobs, recent = runner_services(now) if config.get("runner_services", True) else ([], [])
     snap = {"version": VERSION, "time": int(now), "host": socket.gethostname(), "cores": os.cpu_count(),
-            "load": round(os.getloadavg()[0], 1), "memFreeGiB": mem_free_gib(), **usage(), "jobs": jobs,
+            "load": round(os.getloadavg()[0], 1), "memFreeGiB": mem_free_gib(), "memGiB": mem_total_gib(), **usage(), "jobs": jobs,
             "recent": recent, "machines": [], "errors": []}
     for command in config.get("sources", []):
         try:
@@ -530,7 +545,10 @@ class Hub:
         point = {"t": int(now)}
         for m in machines:
             gpu = [g["busy"] for g in m.get("gpus") or [] if isinstance(g.get("busy"), (int, float))]
-            values = {"load": m.get("load"), "cpu": m.get("cpu"), "gpu": max(gpu) if gpu else None, "temp": m.get("cpuTemp")}
+            free, total = m.get("memFreeGiB"), m.get("memGiB")
+            mem = round(100 * (1 - free / total), 1) if isinstance(free, (int, float)) and isinstance(total, (int, float)) and total else None
+            values = {"load": m.get("load"), "cpu": m.get("cpu"), "gpu": max(gpu) if gpu else None, "temp": m.get("cpuTemp"),
+                      "mem": mem}
             values = {k: v for k, v in values.items() if isinstance(v, (int, float))}
             if values:
                 point[m["name"]] = values
@@ -639,7 +657,8 @@ def demo() -> None:
     def point(i: int, k: int) -> dict:
         wave = abs(((i + k * 40) % 80) - 40) / 40
         return {"load": round(4 + 3 * wave + rng.random(), 1), "cpu": round(20 + 50 * wave + 5 * rng.random(), 1),
-                "temp": round(55 + 30 * wave) if k != 1 else round(92 + 4 * rng.random()), **({"gpu": round(40 + 50 * wave)} if k == 2 else {})}
+                "temp": round(55 + 30 * wave) if k != 1 else round(92 + 4 * rng.random()), "mem": round(45 + 30 * wave),
+                **({"gpu": round(40 + 50 * wave)} if k == 2 else {})}
     samples = [{"t": int(start - 7200 + i * 30), **{m: point(i, k) for k, m in enumerate(machines)}} for i in range(240)]
 
     def body() -> bytes:
@@ -651,8 +670,9 @@ def demo() -> None:
             jobs = [{"repo": h["repo"], "job": h["job"], "state": "running", "since": h["started"], "label": h["label"],
                      "url": None} for h in live if h["machine"] == m]
             ms.append({"name": m, "ok": True, "cores": [16, 16, 32][k], "load": samples[-1][m]["load"],
-                       "cpu": samples[-1][m]["cpu"], "cpuTemp": samples[-1][m]["temp"], "memFreeGiB": [21.5, 9.8, 60.2][k],
-                       "busiest": [{"name": "node build.js", "pid": 4242, "cpu": 180}] if k == 1 else [], "jobs": jobs,
+                       "cpu": samples[-1][m]["cpu"], "cpuTemp": samples[-1][m]["temp"], "memFreeGiB": [21.5, 9.8, 60.2][k], "memGiB": [32.0, 16.0, 128.0][k],
+                       "busiest": [{"name": "node build.js", "pid": 4242, "cpu": 180}, {"name": "python3.12 suite.py", "pid": 4250, "cpu": 96},
+                                   {"name": "gvisor_sentry", "pid": 4301, "cpu": 31}] if k == 1 else [], "jobs": jobs,
                        "gpus": [{"name": "RTX 4090", "busy": 64.0, "memUsedGiB": 14.2, "memGiB": 24.0, "temp": 71.0}] if k == 2 else []})
             if ms[-1]["cpuTemp"] >= CPU_HOT_C:
                 ms[-1]["hot"] = f"CPU {ms[-1]['cpuTemp']}°C"

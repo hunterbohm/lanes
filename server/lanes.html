@@ -62,19 +62,40 @@
   .fresh.stale { color: var(--bad); }
   svg { display: block; overflow: visible; max-width: 100%; height: auto; }
   svg text { fill: var(--ink-3); font-size: 10px; font-variant-numeric: tabular-nums; }
-  .machines { display: grid; grid-template-columns: minmax(70px, auto) 1fr auto; column-gap: 14px; row-gap: 14px; align-items: center; }
-  .machines > div { min-width: 0; }      /* a long line (busiest programs) ellipsizes instead of widening the row */
+  .mcard { padding: 12px 0; position: relative; }
+  .mcard + .mcard::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 1px; background: var(--grid); }
+  .mcard:first-child { padding-top: 2px; }
+  .mhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
   .mname { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; white-space: nowrap; }
+  .chip { font-size: 11px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .chip.hot { color: #fff; background: var(--bad); font-weight: 600; padding: 1px 7px; border-radius: 9px; }
+  .mhead .slots { flex: none; height: 7px; }
   .mmeta { color: var(--ink-3); font-size: 11px; margin-top: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .mmeta.err { color: var(--bad); white-space: normal; }
   .mmeta.warn { color: var(--ink-2); }
-  .use { display: grid; grid-template-columns: 26px minmax(40px, 1fr) 76px; column-gap: 7px; row-gap: 4px; align-items: center;
-         margin-top: 7px; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
-  .use .meter { height: 5px; }
-  .use .v { white-space: nowrap; text-align: right; }
-  .warm { color: var(--warn); } .hot { color: var(--bad); font-weight: 600; }
-  .mmeta.hot { color: var(--bad); font-weight: 600; }
-  .heat { white-space: pre-line; margin-top: 6px; font-size: 11px; color: var(--bad); font-weight: 600; }
+  .tiles4 { display: grid; gap: 6px; margin-top: 9px; }
+  @media (max-width: 400px) { .tiles4 { grid-template-columns: 1fr 1fr !important; } .mhead .slots { display: none; } }
+  .tile { border: 1px solid var(--grid); border-radius: 8px; padding: 6px 8px 5px; min-width: 0; }
+  .tile.hot { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, transparent); }
+  .tile .lab { display: flex; justify-content: space-between; gap: 4px; font-size: 10.5px; color: var(--ink-3); }
+  .tile .lab .flag { font-weight: 600; color: var(--bad); }
+  .tile .lab .flag.warm { color: var(--ink-2); }
+  .tile .lab .flag.info { color: var(--ink-3); font-weight: 400; }
+  .tile .val { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; line-height: 1.25; }
+  .tile .val small { font-size: 11px; font-weight: 500; color: var(--ink-3); margin-left: 1px; }
+  .tile .sub { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .tile svg { margin-top: 4px; width: 100%; height: 24px; }
+  .tile.none .val { color: var(--ink-3); }
+  .procs { display: grid; grid-template-columns: minmax(0, 1fr) 90px 34px; column-gap: 8px; row-gap: 3px; align-items: center;
+           margin-top: 8px; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .procs .pl { grid-column: 1 / -1; color: var(--ink-3); font-size: 10.5px; }
+  .procs .pn { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ink-2); }
+  .procs .pv { text-align: right; color: var(--ink-2); }
+  .procs .meter { height: 6px; }
+  .vrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; align-items: center; margin-top: 7px; }
+  .heat { margin-top: 10px; padding: 7px 10px; border-radius: 8px; font-size: 11.5px; line-height: 1.5; color: var(--ink);
+          background: color-mix(in srgb, var(--bad) 12%, transparent); border-left: 3px solid var(--bad); }
+  .heat b { color: var(--bad); }
   .slots { display: flex; gap: 2px; height: 8px; }
   .slots i { flex: 1; border-radius: 2px; background: var(--track); }
   .meter { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
@@ -230,65 +251,102 @@
     return svg;
   }
 
-  // ---- per machine: busy slots or load, a 2-hour load sparkline, or a source's own meter
-  // CPU % over 2 hours (a dashed line for the GPU where there is one); load on cores from a hub without CPU samples.
-  function sparkline(m) {
-    const mine = status.samples.filter((s) => s[m.name]).map((s) => ({ t: s.t, ...s[m.name] }));
-    const byCpu = mine.some((p) => p.cpu != null);
-    const pts = mine.filter((p) => (byCpu ? p.cpu : p.load) != null).map((p) => [p.t, byCpu ? p.cpu : p.load]);
-    const gpuPts = mine.filter((p) => p.gpu != null).map((p) => [p.t, p.gpu]);
-    const W = 96, H = 22;
-    const svg = el('svg:svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` });
+  // ---- per machine: one tile per reading (CPU, GPU, memory, heat), each with its 2-hour line, then the busiest programs
+  const HOT_C = 90, WARM_C = 80, GPU_HOT_C = 85;
+  const series = (m, key) => status.samples.filter((s) => s[m.name] && s[m.name][key] != null).map((s) => [s.t, s[m.name][key]]);
+
+  // A small area chart with a hover crosshair. lo..hi fixes the scale; marks are dashed lines such as the heat limits.
+  function spark(pts, { lo = 0, hi = 100, stroke, marks = [], fmt, title }) {
+    const W = 100, H = 24;
+    const svg = el('svg:svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none' });
     if (pts.length < 2) return svg;
-    const t0 = pts[0][0], t1 = pts[pts.length - 1][0], cores = m.cores || 1;
-    const hi = byCpu ? 100 : Math.max(cores, ...pts.map((p) => p[1]));
-    const x = (t) => ((t - t0) / Math.max(1, t1 - t0)) * (W - 5);
-    const y = (v) => 2 + (H - 4) * (1 - Math.min(v, hi) / hi);
-    const path = (ps) => ps.map((p, i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join('');
-    svg.append(el('svg:line', { x1: 0, x2: W - 5, y1: y(byCpu ? 100 : cores), y2: y(byCpu ? 100 : cores), stroke: 'var(--grid)', 'stroke-width': 1 }));
-    const d = path(pts);
-    svg.append(el('svg:path', { d: `${d}L${x(t1)},${H}L0,${H}Z`, fill: color(m.name), 'fill-opacity': 0.1 }));
-    if (gpuPts.length > 1) svg.append(el('svg:path', { d: path(gpuPts), fill: 'none', stroke: 'var(--ink-3)', 'stroke-width': 1.2, 'stroke-dasharray': '2 2' }));
-    svg.append(el('svg:path', { d, fill: 'none', stroke: color(m.name), 'stroke-width': 1.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
-    const last = pts[pts.length - 1];
-    svg.append(el('svg:circle', { cx: x(last[0]), cy: y(last[1]), r: 3, fill: color(m.name), stroke: 'var(--surface)', 'stroke-width': 1.5 }));
+    const t0 = pts[0][0], t1 = pts[pts.length - 1][0];
+    const x = (t) => ((t - t0) / Math.max(1, t1 - t0)) * W;
+    const y = (v) => 1.5 + (H - 3) * (1 - (Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo));
+    for (const mk of marks) {
+      svg.append(el('svg:line', { x1: 0, x2: W, y1: y(mk.v), y2: y(mk.v), stroke: mk.color, 'stroke-width': 1,
+        'stroke-dasharray': '3 2', 'vector-effect': 'non-scaling-stroke', opacity: 0.8 }));
+    }
+    const d = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(2)},${y(p[1]).toFixed(2)}`).join('');
+    svg.append(el('svg:path', { d: `${d}L${W},${H}L0,${H}Z`, fill: stroke, 'fill-opacity': 0.13 }));
+    svg.append(el('svg:path', { d, fill: 'none', stroke, 'stroke-width': 1.5, 'stroke-linejoin': 'round', 'vector-effect': 'non-scaling-stroke' }));
+    const cross = el('svg:line', { y1: 0, y2: H, stroke: 'var(--ink-3)', 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke', opacity: 0 });
+    svg.append(cross);
     const peak = Math.max(...pts.map((p) => p[1]));
-    const temps = mine.map((p) => p.temp).filter((v) => v != null);
-    const lines = [byCpu ? `${m.name} CPU, last ${dur(t1 - t0)}` : `${m.name} load, last ${dur(t1 - t0)}`,
-      byCpu ? `now ${Math.round(last[1])}% · peak ${Math.round(peak)}%` : `now ${last[1]} on ${cores} cores · peak ${peak}`];
-    if (gpuPts.length > 1) lines.push(`GPU (dashed) now ${Math.round(gpuPts[gpuPts.length - 1][1])}% · peak ${Math.round(Math.max(...gpuPts.map((p) => p[1])))}%`);
-    if (temps.length) lines.push(`CPU heat now ${temps[temps.length - 1]}°C · peak ${Math.max(...temps)}°C`);
-    return hoverable(svg, lines.join('\n'));
+    const avg = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+    svg.addEventListener('mousemove', (ev) => {
+      const r = svg.getBoundingClientRect();
+      const t = t0 + ((ev.clientX - r.left) / r.width) * (t1 - t0);
+      const p = pts.reduce((best, q) => (Math.abs(q[0] - t) < Math.abs(best[0] - t) ? q : best));
+      cross.setAttribute('x1', x(p[0])); cross.setAttribute('x2', x(p[0])); cross.setAttribute('opacity', 1);
+      showTip(ev, `${title} at ${clock.format(p[0] * 1000)}: ${fmt(p[1])}\nlast ${dur(t1 - t0)}: peak ${fmt(peak)} · average ${fmt(avg)}`);
+    });
+    svg.addEventListener('mouseleave', () => { cross.setAttribute('opacity', 0); hideTip(); });
+    return svg;
   }
 
-  const HOT_C = 90, WARM_C = 80;
-  const tempText = (c, hot = HOT_C) => (c == null ? null
-    : el('span', { class: c >= hot ? 'hot' : c >= WARM_C ? 'warm' : null, text: `${Math.round(c)}°C` }));
-  const join = (...parts) => {
-    const out = [];
-    for (const p of parts.filter((x) => x != null && x !== '')) out.push(...(out.length ? [' · ', p] : [p]));
-    return out;
-  };
+  function tile({ label, value, unit, sub, chart, flag, flagClass, hot, none }) {
+    return el('div', { class: `tile${hot ? ' hot' : ''}${none ? ' none' : ''}` },
+      el('div', { class: 'lab' }, el('span', { text: label }), flag ? el('span', { class: `flag ${flagClass || (hot ? '' : 'warm')}`, text: flag }) : null),
+      el('div', { class: 'val' }, value, unit ? el('small', { text: unit }) : null),
+      el('div', { class: 'sub', text: sub || ' ', title: sub || null }),
+      chart || el('svg:svg', { viewBox: '0 0 100 24' }));
+  }
 
-  // What the whole machine is doing, CI or not: CPU and each GPU as small meters, with heat and the busiest programs.
-  function usage(m) {
-    if (m.cpu == null && !(m.gpus || []).length) return null;
-    const grid = el('div', { class: 'use' });
+  const pct = (v) => `${Math.round(v)}%`;
+  const deg = (v) => `${Math.round(v)}°C`;
+  const heatFlag = (c, hot) => (c == null ? null : c >= hot ? '▲ hot' : c >= WARM_C ? 'warm' : null);
+
+  function tiles(m) {
+    const c = color(m.name), out = [];
     if (m.cpu != null) {
-      grid.append(el('span', { text: 'CPU' }), meter(m.cpu / 100, m.cpuTemp >= HOT_C ? 'var(--bad)' : color(m.name), 'CPU busy, every core'),
-        el('span', { class: 'v' }, ...join(`${Math.round(m.cpu)}%`, tempText(m.cpuTemp))));
+      out.push(tile({ label: 'CPU', value: Math.round(m.cpu), unit: '%', flag: m.cores ? `${m.cores} cores` : null, flagClass: 'info',
+        sub: m.load != null ? `load ${m.load}` : null,
+        chart: spark(series(m, 'cpu'), { stroke: c, fmt: pct, title: `${m.name} CPU` }) }));
     }
-    const notes = [];
-    for (const g of m.gpus || []) {
-      grid.append(el('span', { text: 'GPU' }), meter((g.busy || 0) / 100, g.temp >= 85 ? 'var(--bad)' : color(m.name), g.name),
-        el('span', { class: 'v' }, ...join(g.busy != null ? `${Math.round(g.busy)}%` : null, tempText(g.temp, 85))));
-      if (g.memUsedGiB != null && g.memGiB) notes.push(`GPU memory ${g.memUsedGiB} of ${Math.round(g.memGiB)} GB`);
+    (m.gpus || []).forEach((g, i) => {
+      const mem = g.memUsedGiB != null && g.memGiB ? `${g.memUsedGiB} / ${Math.round(g.memGiB)} GB` : g.name;
+      out.push(tile({ label: (m.gpus.length > 1 ? `GPU ${i + 1}` : 'GPU'), value: g.busy != null ? Math.round(g.busy) : '–', unit: g.busy != null ? '%' : '',
+        sub: mem, chart: i === 0 ? spark(series(m, 'gpu'), { stroke: c, fmt: pct, title: `${m.name} GPU` }) : null }));
+    });
+    if (m.memFreeGiB != null) {
+      const total = m.memGiB, used = total ? Math.max(0, total - m.memFreeGiB) : null;
+      out.push(used != null
+        ? tile({ label: 'Memory', value: Math.round((100 * used) / total), unit: '%', sub: `${Math.round(used)} / ${Math.round(total)} GB`,
+            chart: spark(series(m, 'mem'), { stroke: c, fmt: pct, title: `${m.name} memory used` }) })
+        : tile({ label: 'Memory', value: Math.round(m.memFreeGiB), unit: ' GB', sub: 'free' }));
     }
-    const wrap = el('div', {}, grid);
-    if (notes.length) wrap.append(el('div', { class: 'mmeta', text: notes.join(' · ') }));
-    const busy = (m.busiest || []).map((p) => `${p.name} ${p.cpu}%`);
-    if (busy.length) wrap.append(el('div', { class: 'mmeta', title: busy.join('\n'), text: `busiest: ${busy.join(', ')}` }));
-    return wrap;
+    if (m.cpu != null || (m.gpus || []).length) {
+      const gpuTemps = (m.gpus || []).map((g) => g.temp).filter((t) => t != null);
+      const gpuHot = gpuTemps.some((t) => t >= GPU_HOT_C);
+      if (m.cpuTemp != null) {
+        const hot = m.cpuTemp >= HOT_C || gpuHot;
+        out.push(tile({ label: 'Heat', value: Math.round(m.cpuTemp), unit: '°C', hot,
+          flag: gpuHot ? '▲ GPU hot' : heatFlag(m.cpuTemp, HOT_C),
+          sub: gpuTemps.length ? `CPU · GPU ${gpuTemps.map(deg).join(' ')}` : 'CPU',
+          chart: spark(series(m, 'temp'), { lo: 30, hi: 100, stroke: hot ? 'var(--bad)' : c, fmt: deg, title: `${m.name} CPU heat`,
+            marks: [{ v: HOT_C, color: 'var(--bad)' }] }) }));
+      } else if (gpuTemps.length) {
+        out.push(tile({ label: 'Heat', value: Math.round(Math.max(...gpuTemps)), unit: '°C', hot: gpuHot,
+          flag: heatFlag(Math.max(...gpuTemps), GPU_HOT_C), sub: 'GPU' }));
+      } else {
+        out.push(tile({ label: 'Heat', value: '–', sub: 'no sensor', none: true }));
+      }
+    }
+    return out.length ? el('div', { class: 'tiles4', style: { gridTemplateColumns: `repeat(${out.length}, minmax(0, 1fr))` } }, ...out) : null;
+  }
+
+  // The busiest programs as bars against one full core (a program on several cores runs past 100%).
+  function busiest(m) {
+    const list = m.busiest || [];
+    if (!list.length) return null;
+    const scale = Math.max(100, ...list.map((p) => p.cpu));
+    const grid = el('div', { class: 'procs' }, el('div', { class: 'pl', text: 'busiest programs · % of one core' }));
+    for (const p of list) {
+      grid.append(el('div', { class: 'pn', text: p.name, title: `${p.name} (pid ${p.pid})` }),
+        meter(p.cpu / scale, color(m.name), `${p.cpu}% of one core`), el('div', { class: 'pv', text: `${p.cpu}%` }));
+    }
+    return grid;
   }
 
   function meter(share, fill, title) {
@@ -296,45 +354,46 @@
   }
 
   function machineRows() {
-    const grid = el('div', { class: 'machines' });
+    const wrap = el('div');
     for (const m of status.machines) {
-      const running = m.jobs.filter((j) => (j.state || 'running') === 'running').length;
-      const name = el('div', {}, el('div', { class: 'mname' }, el('span', { class: 'dot', style: { background: color(m.name) } }), m.name));
-      let middle = el('div'), right = el('div');
+      const card = el('div', { class: 'mcard' });
+      const head = el('div', { class: 'mhead' }, el('div', { class: 'mname' }, el('span', { class: 'dot', style: { background: color(m.name) } }), m.name));
+      card.append(head);
       if (!m.ok) {
-        name.append(el('div', { class: 'mmeta err', text: m.error || 'no answer' }));
-      } else {
-        name.append(el('div', { class: 'mmeta', text: `${running} running${m.draining ? ' · draining' : ''}` }));
-        const lines = [];
-        if (m.slots && m.slots.total) {
-          const blocks = el('div', { class: 'slots' });
-          for (let i = 0; i < m.slots.total; i++) blocks.append(el('i', { style: i < m.slots.used ? { background: color(m.name) } : null }));
-          middle.append(blocks);
-          lines.push(`${m.slots.used} of ${m.slots.total} ${m.slots.label || 'slots'}`);
-        } else if (m.meter && m.meter.max) {
-          const share = m.meter.value / m.meter.max;
-          middle.append(meter(share, share < 0.15 ? 'var(--bad)' : share < 0.3 ? 'var(--warn)' : color(m.name), m.meter.label));
-          lines.push(`${m.meter.value} of ${m.meter.max} ${m.meter.label || ''}`.trim());
-        } else if (m.load != null && m.cores && m.cpu == null) {
-          middle.append(meter(m.load / m.cores, color(m.name), 'load against cores'));
-          lines.push(`load ${m.load} on ${m.cores} cores`);
-        }
-        const others = m.jobs.filter((j) => !j.size).length;     // jobs not holding a slot: runner services
-        if (m.slots && others) lines.push(`${others} on runner services`);
-        if (m.note) lines.push(m.note);
-        if (lines.length) middle.append(el('div', { class: 'mmeta', text: lines.join(' · ') }));
-        if (m.hot) middle.append(el('div', { class: 'mmeta hot', text: `Running hot: ${m.hot}` }));
-        const use = usage(m);
-        if (use) middle.append(use);
-        for (const w of m.warnings || []) middle.append(el('div', { class: 'mmeta warn', text: `⚠ ${w}` }));
-        if (m.load != null) {
-          right.append(sparkline(m), el('div', { class: 'mmeta', style: { textAlign: 'right' },
-            text: `load ${m.load}${m.cores ? `/${m.cores}` : ''}${m.memFreeGiB != null ? ` · ${Math.round(m.memFreeGiB)} GB free` : ''}` }));
-        }
+        card.append(el('div', { class: 'mmeta err', text: m.error || 'no answer' }));
+        wrap.append(card);
+        continue;
       }
-      grid.append(name, middle, right);
+      const running = m.jobs.filter((j) => (j.state || 'running') === 'running').length;
+      if (!m.virtual) head.append(el('span', { class: 'chip', text: `${running} running${m.draining ? ' · draining' : ''}` }));
+      if (m.hot) head.append(el('span', { class: 'chip hot', text: `▲ hot: ${m.hot}` }));
+      const lines = [];
+      if (m.slots && m.slots.total) {
+        const blocks = el('div', { class: 'slots', title: `${m.slots.used} of ${m.slots.total} ${m.slots.label || 'slots'} in use`,
+          style: { width: `${Math.min(110, m.slots.total * 8)}px` } });
+        for (let i = 0; i < m.slots.total; i++) blocks.append(el('i', { style: i < m.slots.used ? { background: color(m.name) } : null }));
+        head.append(el('span', { class: 'chip', style: { marginLeft: 'auto' }, text: `${m.slots.used}/${m.slots.total} ${m.slots.label || 'slots'}` }), blocks);
+      }
+      const others = m.jobs.filter((j) => !j.size).length;     // jobs not holding a slot: runner services
+      if (m.slots && others) lines.push(`${others} on runner services`);
+      if (m.meter && m.meter.max) {
+        const share = m.meter.value / m.meter.max;
+        card.append(el('div', { class: 'vrow' }, meter(share, share < 0.15 ? 'var(--bad)' : share < 0.3 ? 'var(--warn)' : color(m.name), m.meter.label),
+          el('span', { class: 'chip', text: `${m.meter.value} of ${m.meter.max} ${m.meter.label || ''}`.trim() })));
+      } else if (m.load != null && m.cores && m.cpu == null) {
+        card.append(el('div', { class: 'vrow' }, meter(m.load / m.cores, color(m.name), 'load against cores'),
+          el('span', { class: 'chip', text: `load ${m.load} on ${m.cores} cores` })));
+      }
+      const t = tiles(m);
+      if (t) card.append(t);
+      const b = busiest(m);
+      if (b) card.append(b);
+      if (m.note) lines.push(m.note);
+      if (lines.length) card.append(el('div', { class: 'mmeta', text: lines.join(' · ') }));
+      for (const w of m.warnings || []) card.append(el('div', { class: 'mmeta warn', text: `⚠ ${w}` }));
+      wrap.append(card);
     }
-    return grid;
+    return wrap;
   }
 
   // ---- running now, each with how far along it is against that job's usual time
@@ -470,10 +529,10 @@
   function heatBanner() {
     const hot = status.machines.filter((m) => m.hot);
     if (!hot.length) return null;
-    return el('div', { class: 'heat' }, hot.map((m) => {
+    return el('div', { class: 'heat' }, ...hot.map((m) => {
       const top = (m.busiest || [])[0];
-      return `${m.name} is running hot (${m.hot})${top ? `; busiest: ${top.name} ${top.cpu}%` : ''}`;
-    }).join('\n'));
+      return el('div', {}, el('b', { text: `▲ ${m.name} is running hot: ${m.hot}` }), top ? ` · busiest: ${top.name} ${top.cpu}%` : '');
+    }));
   }
 
   function render() {
@@ -497,7 +556,7 @@
       el('div', { class: 'fresh' }),
       ...[heatBanner()].filter(Boolean),
       el('section', {}, el('h2', {}, 'Jobs at once', el('span', { class: 'aside', text: 'last 6 hours' })), concurrency(now, all)),
-      el('section', {}, el('h2', {}, 'Machines', el('span', { class: 'aside', text: 'whole machine, CI or not · CPU, last 2 hours' })), machineRows()),
+      el('section', {}, el('h2', {}, 'Machines', el('span', { class: 'aside', text: 'whole machine, CI or not · lines: last 2 hours' })), machineRows()),
       el('section', {}, el('h2', {}, 'Running now'), runningList(now)),
       el('section', {}, el('h2', {}, 'Last hour', el('span', { class: 'aside', text: 'bright: running · faded: passed · red: failed' })), timeline(now, all)),
       el('section', {}, el('h2', {}, 'Finished', el('span', { class: 'aside', text: 'last 6 hours, oldest first' })), results()),
