@@ -128,6 +128,47 @@
   @keyframes breathe { 0%, 100% { opacity: .3; } 50% { opacity: .85; } }
   .live { animation: breathe 2.4s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) { .live { animation: none; } .run .bar i { transition: none; } }
+  /* ---- compact layout: the menu bar panel and the T3 card */
+  .c-head { display: flex; align-items: flex-start; gap: 10px; }
+  .c-title { font-size: 13px; font-weight: 600; line-height: 1.35; }
+  .c-title.bad { color: var(--bad); }
+  .c-sub { color: var(--ink-3); font-size: 11px; margin-top: 1px; font-variant-numeric: tabular-nums; }
+  .c-head .fresh { margin: 2px 0 0 auto; white-space: nowrap; }
+  .c-label { font-size: 11px; font-weight: 600; color: var(--ink-2); margin: 16px 0 4px; display: flex; gap: 8px; }
+  .c-label span:last-child { margin-left: auto; font-weight: 400; }
+  .mt, .mt-cols { margin: 0 -8px; }
+  .mt-cols, .mt-row { display: grid; grid-template-columns: minmax(0, 1fr) repeat(4, 54px) 12px; column-gap: 10px; align-items: center; padding: 0 8px; }
+  .mt-cols { font-size: 10px; color: var(--ink-3); padding-bottom: 2px; }
+  .mt-cols span { text-align: right; }
+  .mt-row { padding-top: 7px; padding-bottom: 7px; border-radius: 7px; cursor: pointer; }
+  .mt-row:hover { background: var(--hover); }
+  .mt-row:focus-visible { outline: 2px solid var(--c1); outline-offset: -2px; }
+  .mt-name { min-width: 0; }
+  .mt-name .mname { font-size: 12.5px; }
+  .mt-why { color: var(--ink-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 1px 0 0 14px; }
+  .cell { text-align: right; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .cell.na { color: var(--gone); font-weight: 400; }
+  .cell.bad { color: var(--bad); }
+  .cell i { display: block; height: 3px; border-radius: 2px; background: var(--track); margin-top: 3px; overflow: hidden; }
+  .cell i b { display: block; height: 100%; border-radius: 2px; }
+  .chev { color: var(--ink-3); font-size: 10px; transition: transform .15s; text-align: center; }
+  .open .chev { transform: rotate(90deg); }
+  .mt-more { padding: 2px 8px 12px 22px; }
+  .mt-more .kv { color: var(--ink-3); font-size: 11px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+  .multi { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin: 8px 0 4px; }
+  .multi .lab { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .multi .lab b { color: var(--ink-2); font-weight: 600; }
+  .multi svg { width: 100%; height: 28px; margin-top: 2px; }
+  .mt + .mt { border-top: 1px solid var(--grid); }
+  .ci-line { display: flex; gap: 12px; color: var(--ink-2); font-size: 11.5px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+  .ci-line b { color: var(--ink); font-weight: 600; }
+  .vrow + .meter, .ci-line + .vrow { margin-top: 8px; }
+  .c-head ~ .meter { height: 6px; }
+  .foot { display: flex; justify-content: space-between; margin-top: 14px; padding-top: 9px; border-top: 1px solid var(--grid); font-size: 11.5px; }
+  .foot a { color: var(--c1); }
+  .foot a:hover { text-decoration: underline; }
+  .foot span { color: var(--ink-3); }
+  @media (prefers-reduced-motion: reduce) { .chev { transition: none; } }
 </style>
 </head>
 <body>
@@ -520,7 +561,9 @@
 
   // The menu bar app sizes its panel to the page; T3's card does the same.
   function reportHeight() {
-    const height = Math.ceil(document.documentElement.scrollHeight);
+    // The page's own content, not the document: in the panel the body fills the window, so the document is never
+    // shorter than the panel and the panel could only grow.
+    const height = Math.ceil(app.offsetTop + app.offsetHeight + parseFloat(getComputedStyle(document.body).paddingBottom));
     window.webkit?.messageHandlers?.lanes?.postMessage({ height });
     if (host === 'embed') parent.postMessage({ type: 'lanes-height', height }, '*');
   }
@@ -535,6 +578,152 @@
     }));
   }
 
+  // ---- compact layout (menu bar panel, T3 card): what each machine is doing at a glance, details on click, CI in
+  // brief, and the full charts one click away in the browser.
+  const opened = new Set((() => { try { return JSON.parse(localStorage.getItem('lanes-open') || '[]'); } catch { return []; } })());
+  const saveOpened = () => { try { localStorage.setItem('lanes-open', JSON.stringify([...opened])); } catch {} };
+  const real = () => status.machines.filter((m) => !m.virtual);
+  const heatOf = (m) => {
+    const temps = [m.cpuTemp, ...(m.gpus || []).map((g) => g.temp)].filter((t) => t != null);
+    return temps.length ? Math.max(...temps) : null;
+  };
+
+  function compactHead() {
+    const hot = real().filter((m) => m.hot);
+    const down = real().filter((m) => !m.ok);
+    const warm = real().filter((m) => m.ok && !m.hot && heatOf(m) >= WARM_C);
+    let title, bad = false;
+    if (hot.length) { title = hot.map((m) => `▲ ${m.name} is running hot: ${m.hot}`).join('\n'); bad = true; }
+    else if (down.length) { title = `▲ ${down.map((m) => m.name).join(', ')} not answering`; bad = true; }
+    else if (warm.length) title = `${warm.map((m) => `${m.name} is warm (${Math.round(heatOf(m))}°C)`).join(', ')}; the rest normal`;
+    else title = `All ${real().length} machines normal`;
+    const jobs = status.running;
+    const sub = `${jobs} CI job${jobs === 1 ? '' : 's'} running${status.starting ? ` · ${status.starting} starting` : ''}`;
+    return el('div', { class: 'c-head' },
+      el('div', {}, el('div', { class: `c-title${bad ? ' bad' : ''}`, style: { whiteSpace: 'pre-line' }, text: title }), el('div', { class: 'c-sub', text: sub })),
+      el('div', { class: 'fresh' }));
+  }
+
+  function cell(text, share, fill, cls) {
+    if (text == null) return el('div', { class: 'cell na', text: '–' });
+    return el('div', { class: `cell${cls ? ` ${cls}` : ''}` }, text,
+      el('i', {}, el('b', { style: { width: `${Math.max(2, Math.min(1, share) * 100)}%`, background: fill } })));
+  }
+
+  // Why the machine is busy, in a few words: its busiest program, else its CI jobs, else idle.
+  function why(m) {
+    const top = (m.busiest || [])[0];
+    const running = m.jobs.filter((j) => (j.state || 'running') === 'running').length;
+    const parts = [];
+    if (top) parts.push(`${top.name} ${top.cpu}%`);
+    if (running) parts.push(`${running} CI job${running === 1 ? '' : 's'}`);
+    return parts.join(' · ') || 'idle';
+  }
+
+  function details(m) {
+    const c = color(m.name);
+    const chart = (label, key, now, fmt, opts = {}) => {
+      const pts = series(m, key);
+      if (now == null && pts.length < 2) return null;
+      const peak = pts.length ? Math.max(...pts.map((p) => p[1])) : null;
+      return el('div', {}, el('div', { class: 'lab' }, el('span', {}, el('b', { text: label }), now != null ? `  ${fmt(now)}` : ''),
+        el('span', { text: peak != null ? `peak ${fmt(peak)}` : '' })),
+        spark(pts, { stroke: c, fmt, title: `${m.name} ${label}`, ...opts }));
+    };
+    const free = m.memFreeGiB, total = m.memGiB;
+    const memNow = free != null && total ? (100 * (total - free)) / total : null;
+    const gpu = (m.gpus || [])[0];
+    const multi = el('div', { class: 'multi' }, ...[
+      chart('CPU', 'cpu', m.cpu, pct),
+      gpu ? chart('GPU', 'gpu', gpu.busy, pct) : null,
+      chart('Memory', 'mem', memNow, pct),
+      chart('Heat', 'temp', m.cpuTemp, deg, { lo: 30, hi: 100, marks: [{ v: HOT_C, color: 'var(--bad)' }],
+        stroke: m.cpuTemp >= HOT_C ? 'var(--bad)' : c }),
+    ].filter(Boolean));
+    const facts = [];
+    if (m.cores) facts.push(`${m.cores} cores, load ${m.load}`);
+    if (total) facts.push(`memory ${Math.round(total - free)} of ${Math.round(total)} GB`);
+    for (const g of m.gpus || []) facts.push(`${g.name}${g.memUsedGiB != null && g.memGiB ? `, ${g.memUsedGiB} of ${Math.round(g.memGiB)} GB` : ''}${g.temp != null ? `, ${deg(g.temp)}` : ''}`);
+    if (m.slots && m.slots.total) facts.push(`CI: ${m.slots.used} of ${m.slots.total} ${m.slots.label || 'slots'} in use`);
+    if (m.cpuTemp == null && !(m.gpus || []).some((g) => g.temp != null)) facts.push('no heat sensor');
+    if (m.note) facts.push(m.note);
+    const more = el('div', { class: 'mt-more' }, el('div', { class: 'kv', text: facts.join(' · ') }), multi);
+    const b = busiest(m);
+    if (b) more.append(b);
+    for (const w of m.warnings || []) more.append(el('div', { class: 'mmeta warn', text: `⚠ ${w}` }));
+    return more;
+  }
+
+  function machineTable() {
+    const wrap = el('div', {}, el('div', { class: 'mt-cols' }, el('span'), ...['CPU', 'GPU', 'Memory', 'Heat'].map((t) => el('span', { text: t })), el('span')));
+    for (const m of real()) {
+      const block = el('div', { class: `mt${opened.has(m.name) ? ' open' : ''}` });
+      const name = el('div', { class: 'mt-name' }, el('div', { class: 'mname' }, el('span', { class: 'dot', style: { background: color(m.name) } }), m.name));
+      let cells;
+      if (!m.ok) {
+        name.append(el('div', { class: 'mt-why', style: { color: 'var(--bad)' }, text: m.error || 'no answer' }));
+        cells = [cell(null), cell(null), cell(null), cell(null)];
+      } else {
+        name.append(el('div', { class: 'mt-why', text: why(m) }));
+        const gpu = (m.gpus || []).map((g) => g.busy).filter((v) => v != null);
+        const memShare = m.memFreeGiB != null && m.memGiB ? 1 - m.memFreeGiB / m.memGiB : null;
+        const heat = heatOf(m);
+        const hotNow = !!m.hot;
+        cells = [
+          cell(m.cpu != null ? pct(m.cpu) : null, (m.cpu || 0) / 100, color(m.name)),
+          cell(gpu.length ? pct(Math.max(...gpu)) : null, Math.max(0, ...gpu) / 100, color(m.name)),
+          cell(memShare != null ? pct(memShare * 100) : m.memFreeGiB != null ? `${Math.round(m.memFreeGiB)} GB` : null, memShare ?? 0, color(m.name)),
+          cell(heat != null ? `${hotNow ? '▲ ' : ''}${Math.round(heat)}°` : null, (heat - 30) / 70,
+            hotNow ? 'var(--bad)' : heat >= WARM_C ? 'var(--warn)' : 'var(--ink-3)', hotNow ? 'bad' : null),
+        ];
+      }
+      const row = el('div', { class: 'mt-row', role: 'button', tabindex: 0, 'aria-expanded': String(opened.has(m.name)) },
+        name, ...cells, el('div', { class: 'chev', text: '▶' }));
+      const toggle = () => { opened.has(m.name) ? opened.delete(m.name) : opened.add(m.name); saveOpened(); render(); };
+      row.addEventListener('click', toggle);
+      row.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); } });
+      block.append(row);
+      if (m.ok && opened.has(m.name)) block.append(details(m));
+      wrap.append(block);
+    }
+    return wrap;
+  }
+
+  function ciBrief(now) {
+    const done = status.history;
+    const passed = done.filter((j) => j.result === 'success').length, failed = done.filter((j) => j.result === 'failure').length;
+    const times = done.filter((j) => j.started).map((j) => j.finished - j.started);
+    const line = el('div', { class: 'ci-line' });
+    if (done.length) {
+      line.append(el('span', {}, el('span', { class: 'ok-i', text: '✓ ' }), el('b', { text: passed }), ' passed'),
+        el('span', {}, el('span', { class: 'bad-i', text: '✗ ' }), el('b', { text: failed }), ' failed'));
+      if (times.length) line.append(el('span', {}, 'median ', el('b', { text: dur(median(times)) })));
+    } else {
+      line.append(el('span', { text: 'No jobs finished in the last 6 hours.' }));
+    }
+    const out = [line];
+    if (status.machines.some((m) => m.jobs.length)) out.push(el('div', { style: { marginTop: '6px' } }, runningList(now)));
+    for (const m of status.machines.filter((v) => v.virtual && v.meter && v.meter.max)) {
+      const share = m.meter.value / m.meter.max;
+      out.push(el('div', { class: 'vrow' }, el('div', { class: 'mname' }, el('span', { class: 'dot', style: { background: color(m.name) } }), m.name),
+        el('span', { class: 'chip', text: `${m.meter.value} of ${m.meter.max} ${m.meter.label || ''}`.trim() })),
+        meter(share, share < 0.15 ? 'var(--bad)' : share < 0.3 ? 'var(--warn)' : color(m.name), m.meter.label));
+    }
+    return out;
+  }
+
+  function renderCompact(now) {
+    app.replaceChildren(
+      compactHead(),
+      el('div', { class: 'c-label' }, el('span', { text: 'Machines' }), el('span', { text: 'click a machine for its last 2 hours' })),
+      machineTable(),
+      el('div', { class: 'c-label' }, el('span', { text: 'CI' }), el('span', { text: 'last 6 hours' })),
+      ...ciBrief(now),
+      el('div', { class: 'foot' }, el('a', { href: `${location.origin}/`, target: '_blank', rel: 'noopener', text: 'Open full view ↗' }),
+        el('span', { text: 'Esc to close' })),
+    );
+  }
+
   function render() {
     hideTip();
     if (!status) {
@@ -547,6 +736,12 @@
     }
     names = status.machines.map((m) => m.name);
     const now = Date.now() / 1000;
+    if (host) {
+      renderCompact(now);
+      freshness();
+      reportHeight();
+      return;
+    }
     const all = intervals(now);
     const legend = el('div', { class: 'legend' }, ...names.map((m) => el('span', { class: 'key' }, el('span', { class: 'dot', style: { background: color(m) } }), m)));
     const label = el('div', { class: 'hero-label' }, `job${status.running === 1 ? '' : 's'} running`);

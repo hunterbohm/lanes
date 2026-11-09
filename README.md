@@ -13,7 +13,10 @@ six hours went.
 - **The menu bar glyph** is a set of tiny lanes, one per machine, each as long as the number of jobs running there,
   with the total beside it. A red dot means a job failed in the last 30 minutes. A red temperature means a machine
   is running hot (CPU at 90°C or more, or a GPU at 85°C or more).
-- **Click it** for the panel:
+- **Click it** for the panel: one line saying whether every machine is normal (or which one runs hot), a row per
+  machine with CPU, GPU, memory and heat, a CI summary, and "Open full view" for the full page below. Click a
+  machine for its 2-hour charts, its busiest programs and its details. The T3 card shows the same compact view.
+- **The full view** (the hub's page in a browser):
   - jobs at once over the last 6 hours, by machine
   - a card per machine showing everything it is doing, CI or not: a tile each for CPU, GPU (with its memory), memory
     and heat, each with its own 2-hour line (hover for the reading at any time), and the busiest programs as bars. A
