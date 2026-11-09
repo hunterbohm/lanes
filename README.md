@@ -11,10 +11,12 @@ six hours went.
 <p align="center"><img src="docs/screenshot.png" width="460" alt="The Lanes panel: jobs running now, jobs at once over 6 hours, each machine's load, a timeline of the last hour and a tile per finished job"></p>
 
 - **The menu bar glyph** is a set of tiny lanes, one per machine, each as long as the number of jobs running there,
-  with the total beside it. A red dot means a job failed in the last 30 minutes.
+  with the total beside it. A red dot means a job failed in the last 30 minutes. A red temperature means a machine
+  is running hot (CPU at 90°C or more, or a GPU at 85°C or more).
 - **Click it** for the panel:
   - jobs at once over the last 6 hours, by machine
-  - each machine's load, with a 2-hour sparkline
+  - what each whole machine is doing, CI or not: CPU %, each GPU's % and memory, temperatures, the busiest programs,
+    and a 2-hour CPU sparkline (GPU dashed). A machine running hot is named at the top with its busiest program.
   - every running job, with a bar showing how far along it is against that job's usual time
   - a timeline of the last hour, with a lane per machine
   - a tile for every job that finished in the last 6 hours
@@ -34,8 +36,9 @@ six hours went.
 ```
 
 - `lanes agent` reads one machine. It finds the GitHub runners installed as services (what `svc.sh install` sets
-  up), reads what they print ("Running job: …", "Job … completed with result: …"), and adds load and free memory. It
-  prints JSON and exits.
+  up), reads what they print ("Running job: …", "Job … completed with result: …"), and adds load, free memory, CPU %
+  since its last run, the programs using the most CPU, NVIDIA GPUs (through `nvidia-smi`) and AMD ones (from sysfs),
+  and the CPU temperature on Linux (macOS doesn't give it without root). It prints JSON and exits.
   - **Linux:** systemd services, whose output is in the system journal. Its user needs to read the journal: be in
     the `systemd-journal` (or `adm`) group, or no jobs show. The installer says so if you aren't.
   - **macOS:** launchd services, whose output goes to the log file their plist names.
@@ -135,7 +138,7 @@ Only `http(s)` links are kept.
   `listen` address, or a name listed in `hosts`, so a web page can't read it by pointing its own domain at your
   machine.
 - Runs are matched to their usual time by repo and job name, using successful runs from the last 6 hours.
-- Load samples are kept for 2 hours in `~/.local/state/lanes/samples.json` on the hub.
+- Load, CPU, GPU and temperature samples are kept for 2 hours in `~/.local/state/lanes/samples.json` on the hub.
 - The page also works on its own in any browser. To show it in an iframe inside another app, load `/?in=embed`.
   It then leaves the background to its host and posts `{type: "lanes-height", height}` and
   `{type: "lanes-close"}` (on Esc) to the parent window.

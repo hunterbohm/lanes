@@ -1,5 +1,5 @@
 // Lanes for macOS: a menu bar glyph of tiny lanes, one per machine, each as long as the number of CI jobs running
-// there, with the total beside it. Click it (or open lanes://toggle) for the charts page that `lanes hub` serves.
+// there, with the total beside it, and a machine's temperature in red while it runs hot. Click it (or open lanes://toggle) for the charts page that `lanes hub` serves.
 // Right-click for Refresh, Open in Browser, Server Address… and Quit.
 import Cocoa
 import WebKit
@@ -17,6 +17,7 @@ struct Job: Decodable {
 struct Machine: Decodable {
     let name: String
     let jobs: [Job]
+    let hot: String?            // why the hub says it runs hot, such as "CPU 96°C"
 }
 
 struct Status: Decodable {
@@ -148,10 +149,18 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
             title.append(NSAttributedString(string: " ●", attributes: [
                 .font: NSFont.systemFont(ofSize: 7), .foregroundColor: NSColor.systemRed, .baselineOffset: 2.5]))
         }
+        // A hot machine shows its temperature, so loud fans have an answer before the panel opens.
+        let hot = reachable ? machines.filter { $0.hot != nil } : []
+        if let first = hot.first, let degrees = first.hot?.range(of: #"\d+°C"#, options: .regularExpression) {
+            title.append(NSAttributedString(string: " \(first.hot![degrees])", attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+                .foregroundColor: NSColor.systemRed]))
+        }
         button.attributedTitle = title
         let perMachine = zip(machines.map(\.name), counts).map { "\($0) \($1)" }.joined(separator: ", ")
+        let heat = hot.map { "\n\($0.name) is running hot: \($0.hot!)" }.joined()
         button.toolTip = !reachable ? "Lanes: can't reach \(server.absoluteString)"
-            : "\(running) CI job\(running == 1 ? "" : "s") running\(perMachine.isEmpty ? "" : " (\(perMachine))")\(failed ? "\nA job failed in the last 30 minutes" : "")"
+            : "\(running) CI job\(running == 1 ? "" : "s") running\(perMachine.isEmpty ? "" : " (\(perMachine))")\(failed ? "\nA job failed in the last 30 minutes" : "")\(heat)"
     }
 
     // MARK: clicks
