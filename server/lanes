@@ -224,9 +224,14 @@ def process_name(argv: list) -> str:
 
 
 def linux_ticks() -> tuple:
-    """(busy, total) CPU ticks for the whole machine, and {pid: (ticks, name)} for every process, from /proc."""
-    fields = [int(v) for v in Path("/proc/stat").read_text().split("\n", 1)[0].split()[1:]]
-    busy, total = sum(fields) - fields[3] - (fields[4] if len(fields) > 4 else 0), sum(fields)   # idle and iowait
+    """(busy, total) CPU ticks for the whole machine, seconds since boot, and {pid: [ticks, start tick]} for every
+    process, from /proc."""
+    # user nice system idle iowait irq softirq steal; guest time after these is already inside user and nice, so
+    # counting it again would double what VMs use.
+    fields = [int(v) for v in Path("/proc/stat").read_text().split("\n", 1)[0].split()[1:9]]
+    total = sum(fields)
+    busy = total - fields[3] - (fields[4] if len(fields) > 4 else 0)                      # less idle and iowait
+    uptime = float(Path("/proc/uptime").read_text().split()[0])
     procs = {}
     for entry in os.scandir("/proc"):
         if not entry.name.isdigit():
@@ -234,10 +239,10 @@ def linux_ticks() -> tuple:
         try:
             stat = Path(entry.path, "stat").read_text()
             rest = stat[stat.rindex(")") + 2:].split()                  # the name in () may hold spaces
-            procs[entry.name] = int(rest[11]) + int(rest[12])           # utime + stime
+            procs[entry.name] = [int(rest[11]) + int(rest[12]), int(rest[19])]   # utime + stime, start time
         except (OSError, ValueError, IndexError):
             continue
-    return busy, total, procs
+    return busy, total, uptime, procs
 
 
 def usage_linux() -> tuple:
@@ -250,20 +255,31 @@ def usage_linux() -> tuple:
         if now - last["t"] > 60:
             raise ValueError
     except (OSError, ValueError, KeyError, TypeError):
-        busy, total, procs = linux_ticks()
-        last = {"t": now, "busy": busy, "total": total, "procs": procs}
+        busy, total, uptime, procs = linux_ticks()
+        last = {"t": now, "busy": busy, "total": total, "uptime": uptime, "procs": procs}
         time.sleep(0.5)
         now = time.time()
-    busy, total, procs = linux_ticks()
+    busy, total, uptime, procs = linux_ticks()
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        (STATE_DIR / "cpu.json.new").write_text(json.dumps({"t": now, "busy": busy, "total": total, "procs": procs}))
+        (STATE_DIR / "cpu.json.new").write_text(json.dumps({"t": now, "busy": busy, "total": total, "uptime": uptime,
+                                                            "procs": procs}))
         (STATE_DIR / "cpu.json.new").replace(state)
     except OSError:
         pass
     cpu = round(100 * (busy - last["busy"]) / max(1, total - last["total"]), 1)
     hz, seconds = os.sysconf("SC_CLK_TCK"), max(0.1, now - last["t"])
-    shares = sorted(((ticks - last["procs"].get(pid, ticks)) / hz / seconds * 100, pid) for pid, ticks in procs.items())
+    since = last.get("uptime", uptime) * hz
+
+    def before(pid: str, ticks: int, start: int) -> int:
+        """Its ticks at the last reading: 0 for a process started since then (or a new one reusing the pid)."""
+        old = last["procs"].get(pid)
+        if isinstance(old, list) and old[1] == start:
+            return old[0]
+        return 0 if start >= since else ticks
+
+    shares = sorted(((ticks - before(pid, ticks, start)) / hz / seconds * 100, pid) for pid, (ticks, start) in procs.items()
+                    if pid != str(os.getpid()))         # not the agent itself, which just started
     top = []
     for share, pid in reversed(shares[-3:]):
         if share < 10:
