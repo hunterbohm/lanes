@@ -29,8 +29,8 @@ const TEST_DECL = /(?<![.\w$])(?:it|test)(?:\.(?:each|concurrent|failing|only)[^
 const SKIP = /\b(?:it|test|describe)\.(?:skip|todo)\s*\(|\b(?:xit|xtest|xdescribe)\s*\(|@pytest\.mark\.(?:skip|xfail)|\bpytest\.skip\(|\bt\.skip\(|\{\s*skip\s*:\s*true|\bt\.Skip\(/;
 const ONLY = /\b(?:it|test|describe)\.only\s*\(|\bfdescribe\s*\(|\bfit\s*\(/;
 const IGNORE = /ignore|exclude|testPathIgnorePatterns|testMatch|deselect|--skip|collect_ignore/i;
-const ASSERT = /\bexpect\s*\(|\bassert\b|\bassert\.|\bt\.(?:equal|deepEqual|ok|is)\b/;
-const WEAK = /\.toBeTruthy\(\)|\.toBeDefined\(\)|\.not\.toBeNull\(\)|expect\.anything\(\)|\.toBeGreaterThanOrEqual\(0\)|>=\s*0\b|\bassert\s+True\b|assert\.ok\(\s*true\s*\)|\bassert\s+\w+\s+is\s+not\s+None\s*$/;
+const ASSERT = /\bexpect\s*\(|\bassert\b|\bassert\.|\bt\.(?:equal|deepEqual|ok|is)\b|\bself\.(?:assert\w*|fail)\s*\(/;  // Lanes: unittest's self.assert*
+const WEAK = /\.toBeTruthy\(\)|\.toBeDefined\(\)|\.not\.toBeNull\(\)|expect\.anything\(\)|\.toBeGreaterThanOrEqual\(0\)|>=\s*0\b|\bassert\s+True\b|assert\.ok\(\s*true\s*\)|\bassert\s+\w+\s+is\s+not\s+None\s*$|\bself\.assertTrue\(\s*True\s*\)/;
 
 const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 64 << 20, ...opts });
 const git = (...args) => sh("git", args);
@@ -205,7 +205,8 @@ function linkDependencies(from, to, depth = 0) {
 
 // Code under test: source files outside test areas. Everything else a PR changes (tests, helpers,
 // fixtures, conftest.py, configs, packages) is test setup and stays as the PR has it.
-const CODE_UNDER_TEST = /\.([cm]?[jt]sx?|py|go|rb|rs|java|kt|swift)$/;
+// Lanes: server/lanes is a Python program with no extension.
+const CODE_UNDER_TEST = /\.([cm]?[jt]sx?|py|go|rb|rs|java|kt|swift)$|^server\/lanes$/;
 const MISSING = [
   /No module named '([\w.]+)'/g,
   /cannot import name '\w+' from '([\w.]+)'/g,
