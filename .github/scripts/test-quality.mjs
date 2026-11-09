@@ -3,6 +3,8 @@
 //
 //   guard       block test tampering: deleted or skipped tests, a lower test count, `.only`,
 //               loosened assertions, and test-runner ignore settings (agents do this to get a pass).
+//               Edits to this checker or the workflows are blocked too, except a workflow edit that
+//               only pins actions to commits or lowers permissions (vulnwatch's security fixes).
 //   fail-first  a new or changed test file must FAIL when the PR's code under test is put back to
 //               the base version (tests, helpers and configs stay as the PR has them); a test that
 //               passes on both checks nothing (SWE-bench's fail-to-pass rule). A PR that adds tests
@@ -81,13 +83,117 @@ function show(rev, path) {
 
 const count = (text) => (text.match(TEST_DECL) || []).length;
 
-export function guardDiff(entries, read) {
+const CI_FILE = /^\.github\/(scripts\/test-quality\.mjs$|workflows\/)/;
+const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/;
+const USES = /^(\s*(?:-\s+)?uses:\s+)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[^\s@#]+)?)@([^\s#]+)(?:\s+(#.*))?$/;
+const SCOPE = /^(\s*)([a-z-]+):\s+(none|read|write)(?:\s+(#.*))?$/;
+const ALL = /^(\s*permissions:\s+)(write-all|read-all|\{\s*\})(?:\s+(#.*))?$/;
+const RANK = { write: 2, "write-all": 2, read: 1, "read-all": 1, none: 0 };
+const SCOPES = new Set(["actions", "artifact-metadata", "attestations", "checks", "contents", "deployments", "discussions", "id-token", "issues", "models", "packages", "pages", "pull-requests", "repository-projects", "security-events", "statuses"]);
+// Quotes could open or close a multiline string around the line; other breaks split lines for YAML but not here.
+const UNSAFE = /["'\\\v\f\x1c-\x1e\x85\u2028\u2029]|\r(?!$)/;
+
+export function workflowEditProblem(oldText, newText, pins = []) {
+  // null when every changed line only hardens the workflow, else why not. Hardening is a `uses:`
+  // ref moved from a tag or branch to a full commit sha (same action; the comment may become the
+  // old tag, as in `@<sha> # v4`), or a lower `permissions:` level (write > read > none). Lines are
+  // compared in place, so a step added, removed or moved fails. Each pin is pushed to `pins` as
+  // {action, ref, sha}: the caller must still confirm the sha is in the ref's own history.
+  const was = oldText.split("\n");
+  const now = newText.split("\n");
+  if (was.length !== now.length) return "lines were added or removed";
+  const scripts = new Set([...scriptLines(was), ...scriptLines(now)]);
+  for (let i = 0; i < now.length; i++) {
+    if (was[i] === now[i]) continue;
+    const where = `line ${i + 1}: ${now[i].trim().slice(0, 100)}`;
+    if (scripts.has(i) || UNSAFE.test(was[i]) || UNSAFE.test(now[i])) return `not a plain workflow line, ${where}`;
+    const pin = usesKey(was, i) && usesKey(now, i) && pinsAction(strip(was[i]), strip(now[i]));
+    if (pin) pins.push(pin);
+    else if (!(lowered(strip(was[i]), strip(now[i])) && lowersPermission(was, i) && lowersPermission(now, i))) {
+      return `only pinning an action to a commit or lowering a permission can pass, ${where}`;
+    }
+  }
+  return null;
+}
+
+function pinsAction(before, after) {
+  const a = before.match(USES);
+  const b = after.match(USES);
+  if (!a || !b || a[1] !== b[1] || a[2] !== b[2] || /^[0-9a-f]{40}$/.test(a[3]) || !/^[0-9a-f]{40}$/.test(b[3])) return false;
+  // The comment is inert; keep it, drop it, or name the replaced ref with one plain token.
+  const comment = b[4] === a[4] || b[4] === undefined || /^#\s*[\w.+/-]+$/.test(b[4]);
+  return comment && { action: a[2].split("/").slice(0, 2).join("/"), ref: a[3], sha: b[3] };
+}
+
+function usesKey(lines, i) {
+  // `uses:` must be a step's key (`- uses:`, or under a `- name:` item in `steps:`) or a job's
+  // (a reusable workflow), not an env var or action input named `uses`.
+  const up = parent(lines, i);
+  if (up < 0) return false;
+  const isSteps = (j) => j >= 0 && /^\s*steps:\s*(?:#.*)?$/.test(strip(lines[j]));
+  if (/^\s*-\s/.test(lines[i])) return isSteps(up);
+  if (/^\s*-\s/.test(lines[up])) return isSteps(parent(lines, up));
+  const jobs = parent(lines, up);
+  return jobs >= 0 && /^jobs:\s*(?:#.*)?$/.test(strip(lines[jobs]));
+}
+
+function lowered(before, after) {
+  const a = before.match(SCOPE) || before.match(ALL);
+  const b = after.match(SCOPE) || after.match(ALL);
+  if (!a || !b || a[1] !== b[1]) return false;
+  if (before.match(ALL)) return Boolean(after.match(ALL)) && (RANK[b[2]] ?? 0) < RANK[a[2]];
+  return !after.match(ALL) && a[2] === b[2] && SCOPES.has(a[2]) && RANK[b[3]] < RANK[a[3]];
+}
+
+function lowersPermission(lines, i) {
+  // The line must be a real `permissions:` key, or a scope under one: the workflow's or a job's
+  // (an action input named `permissions` under `with:` is not one).
+  let key = i;
+  if (!ALL.test(strip(lines[i]))) {
+    key = parent(lines, i);
+    if (key < 0 || !/^\s*permissions:\s*(?:#.*)?$/.test(strip(lines[key]))) return false;
+  }
+  if (indent(lines[key]) === 0) return true;
+  const job = parent(lines, key);
+  const jobs = job < 0 ? -1 : parent(lines, job);
+  return jobs >= 0 && /^jobs:\s*(?:#.*)?$/.test(strip(lines[jobs]));
+}
+
+const strip = (line) => line.replace(/\r$/, "");
+const indent = (line) => line.length - line.trimStart().length;
+
+function parent(lines, i) {
+  // Nearest line above with less indentation, skipping blanks and comments.
+  for (let j = i - 1; j >= 0; j--) {
+    if (!lines[j].trim() || lines[j].trim().startsWith("#")) continue;
+    if (indent(lines[j]) < indent(lines[i])) return j;
+  }
+  return -1;
+}
+
+function scriptLines(lines) {
+  // Lines inside block scalars (`run: |` and the like): text there is a script, not workflow keys.
+  const out = new Set();
+  let over = null;
+  lines.forEach((line, i) => {
+    if (over !== null && (!line.trim() || indent(line) > over)) return out.add(i);
+    over = /[:-]\s+(?:[&!]\S*\s+)*[|>][+-]?\d?[+-]?\s*(?:#.*)?\r?$/.test(line) ? indent(line.replace(/^(\s*)(?:-\s+)+/, (m, s) => s + " ".repeat(m.length - s.length))) : null;
+  });
+  return out;
+}
+
+export function guardDiff(entries, read, pins = []) {
   // entries: [{status, path, oldPath}]; read(side, path) -> file text. Pure, so it is unit-tested.
+  // Action pins it lets through are pushed to `pins` for pinProblems to confirm upstream.
   const problems = [];
   let before = 0;
   let after = 0;
   for (const { status, path, oldPath } of entries) {
-    if (/^\.github\/(scripts\/test-quality\.mjs|workflows\/)/.test(path)) problems.push(`${path}: changes the CI checks themselves`);
+    if (CI_FILE.test(path) || CI_FILE.test(oldPath || "")) {
+      // A workflow edit passes only when every changed line hardens CI (see workflowEditProblem).
+      const why = status !== "M" || !WORKFLOW_FILE.test(path) ? "" : workflowEditProblem(read("base", path), read("head", path), pins);
+      if (why !== null) problems.push(`${path}: changes the CI checks themselves${why ? ` (${why})` : ""}`);
+    }
     const isTest = TEST_FILE.test(path) || (oldPath && TEST_FILE.test(oldPath));
     if (TEST_CONFIG.test(path) && status !== "D") {
       const added = addedLines(read("base", oldPath || path), read("head", path));
@@ -166,10 +272,43 @@ function changedEntries(from) {
   return out;
 }
 
-function guard() {
+export async function pinProblems(pins, compare) {
+  // A pinned sha must be the commit its old ref names, or an older one in that ref's history, on the
+  // action's own repo; any other commit (a fork's, say) runs code the ref never had.
+  // compare(action, base, head) -> GitHub's compare status ("identical", "ahead", ...) or throws.
+  const problems = [];
+  const seen = new Set();
+  for (const { action, ref, sha } of pins) {
+    const key = `${action}@${ref}>${sha}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    let status;
+    try {
+      status = await compare(action, sha, ref);
+    } catch (error) {
+      problems.push(`${action}@${sha}: could not confirm it is in ${ref}'s history (${error.message})`);
+      continue;
+    }
+    if (status !== "identical" && status !== "ahead") problems.push(`${action}@${sha}: not in ${ref}'s history on ${action} (${status})`);
+  }
+  return problems;
+}
+
+async function githubCompare(action, from, to) {
+  const headers = { accept: "application/vnd.github+json", "user-agent": "test-quality" };
+  if (process.env.GITHUB_TOKEN) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  const url = `https://api.github.com/repos/${action}/compare/${encodeURIComponent(from)}...${encodeURIComponent(to)}?per_page=1`;
+  const response = await fetch(url, { headers });
+  if (!response.ok) throw new Error(`GitHub said ${response.status}`);
+  return (await response.json()).status;
+}
+
+async function guard() {
   const from = base();
   const entries = changedEntries(from);
-  return finish("test guard", guardDiff(entries, (side, path) => show(side === "base" ? from : "HEAD", path)));
+  const pins = [];
+  const problems = guardDiff(entries, (side, path) => show(side === "base" ? from : "HEAD", path), pins);
+  return finish("test guard", [...problems, ...(await pinProblems(pins, githubCompare))]);
 }
 
 function detectTestCommand(root) {
