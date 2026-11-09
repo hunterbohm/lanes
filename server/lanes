@@ -2,8 +2,9 @@
 """lanes: see what every GitHub Actions runner on every one of your machines is doing, from one place.
 
   lanes agent              print this machine's CI as JSON: the job each runner service (systemd on Linux, launchd on
-                           macOS) is running, the jobs that finished in the last 6 hours, load, memory, and whatever
-                           the sources in ~/.config/lanes/agent.toml add.
+                           macOS) is running, the jobs that finished in the last 6 hours, load, memory, CPU %, the
+                           busiest programs, GPUs, temperatures, and whatever the sources in
+                           ~/.config/lanes/agent.toml add.
   lanes hub [CONFIG]       every 5 seconds, run the agent on each machine in CONFIG (default ~/.config/lanes/hub.toml;
                            over SSH for remote ones) and serve the charts page at http://127.0.0.1:8792/ and the data
                            at /status.json. The Lanes menu bar app shows the page. The machine list can come from a
@@ -33,15 +34,17 @@ except ImportError:      # Python before 3.11: only `lanes demo` works
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "lanes"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "lanes"
 PAGE_PLACES = (Path(__file__).resolve().parent / "lanes.html", Path.home() / ".local/share/lanes/lanes.html")
 RECENT_S = 6 * 3600              # finished jobs are kept this long
 REFRESH_S = 5
 LIST_EVERY_S = 60               # how often `machines_command` is re-run
-SAMPLE_EVERY_S = 30              # load samples for the sparklines, kept 2 hours
+SAMPLE_EVERY_S = 30              # CPU, GPU and heat samples for the sparklines, kept 2 hours
 SAMPLES_KEPT = 240
+CPU_HOT_C = 90                   # a machine past these is flagged as running hot
+GPU_HOT_C = 85
 RESULTS = {"succeeded": "success", "success": "success", "failed": "failure", "failure": "failure",
            "canceled": "cancelled", "cancelled": "cancelled"}
 LOG_LINE = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ): (?:Running job: (.+)|Job (.+) completed with result: (\w+))$")
@@ -199,6 +202,171 @@ def mem_free_gib() -> float | None:
     return None
 
 
+INTERPRETERS = re.compile(r"^(python[\d.]*|node|bun|deno|ruby|perl|bash|sh|zsh|java)$")
+
+
+def process_name(argv: list) -> str:
+    """`python3.12 suite.py` rather than just `python3.12`: for an interpreter, the script it runs says what it is."""
+    if not argv or not argv[0]:
+        return "?"
+    name = os.path.basename(argv[0])
+    if not INTERPRETERS.match(name):
+        return name[:48]
+    rest = iter(argv[1:6])
+    for arg in rest:
+        if arg == "-m":                          # python -m module
+            return f"{name} -m {next(rest, '')}"[:48]
+        if arg in ("-c", "-e"):                  # code on the command line says nothing short
+            return f"{name} {arg}"
+        if arg and not arg.startswith("-"):
+            return f"{name} {os.path.basename(arg)}"[:48]
+    return name[:48]
+
+
+def linux_ticks() -> tuple:
+    """(busy, total) CPU ticks for the whole machine, and {pid: (ticks, name)} for every process, from /proc."""
+    fields = [int(v) for v in Path("/proc/stat").read_text().split("\n", 1)[0].split()[1:]]
+    busy, total = sum(fields) - fields[3] - (fields[4] if len(fields) > 4 else 0), sum(fields)   # idle and iowait
+    procs = {}
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = Path(entry.path, "stat").read_text()
+            rest = stat[stat.rindex(")") + 2:].split()                  # the name in () may hold spaces
+            procs[entry.name] = int(rest[11]) + int(rest[12])           # utime + stime
+        except (OSError, ValueError, IndexError):
+            continue
+    return busy, total, procs
+
+
+def usage_linux() -> tuple:
+    """(CPU busy %, busiest processes) since the agent last ran, so each 5-second pass sees the last 5 seconds. With no
+    reading from the last minute (the first run), it measures half a second instead."""
+    state = STATE_DIR / "cpu.json"
+    now = time.time()
+    try:
+        last = json.loads(state.read_text())
+        if now - last["t"] > 60:
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError):
+        busy, total, procs = linux_ticks()
+        last = {"t": now, "busy": busy, "total": total, "procs": procs}
+        time.sleep(0.5)
+        now = time.time()
+    busy, total, procs = linux_ticks()
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        (STATE_DIR / "cpu.json.new").write_text(json.dumps({"t": now, "busy": busy, "total": total, "procs": procs}))
+        (STATE_DIR / "cpu.json.new").replace(state)
+    except OSError:
+        pass
+    cpu = round(100 * (busy - last["busy"]) / max(1, total - last["total"]), 1)
+    hz, seconds = os.sysconf("SC_CLK_TCK"), max(0.1, now - last["t"])
+    shares = sorted(((ticks - last["procs"].get(pid, ticks)) / hz / seconds * 100, pid) for pid, ticks in procs.items())
+    top = []
+    for share, pid in reversed(shares[-3:]):
+        if share < 10:
+            break
+        try:
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace").split("\0")
+        except OSError:
+            continue
+        top.append({"name": process_name(argv), "pid": int(pid), "cpu": round(share)})
+    return cpu, top
+
+
+def usage_mac() -> tuple:
+    """(CPU busy %, busiest processes). macOS's ps already reports each process's recent share of a core."""
+    rows = []
+    for line in run(["ps", "-A", "-o", "pid=,%cpu="], 10).splitlines():
+        try:
+            pid, share = line.split()
+            rows.append((float(share), int(pid)))
+        except ValueError:
+            continue
+    if not rows:
+        return None, []
+    rows.sort(reverse=True)
+    top = []
+    for share, pid in rows[:3]:
+        if share < 10:
+            break
+        # comm is the program's path, which may hold spaces; args adds the script an interpreter runs.
+        program = run(["ps", "-p", str(pid), "-o", "comm="], 5).strip()
+        args = run(["ps", "-p", str(pid), "-o", "args="], 5).strip()
+        argv = [program, *args[len(program):].split()] if program and args.startswith(program) else [program or "?", *args.split()[1:]]
+        top.append({"name": process_name(argv), "pid": pid, "cpu": round(share)})
+    return round(min(100.0, sum(r[0] for r in rows) / (os.cpu_count() or 1)), 1), top
+
+
+def read_number(path) -> float | None:
+    try:
+        return float(Path(path).read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def cpu_temp() -> float | None:
+    """The CPU package temperature in °C on Linux (Intel coretemp, AMD k10temp), or None where there's no sensor to
+    read without root, such as macOS."""
+    for hwmon in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
+        try:
+            name = (hwmon / "name").read_text().strip()
+        except OSError:
+            continue
+        value = read_number(hwmon / "temp1_input") if name in ("coretemp", "k10temp", "zenpower") else None
+        if value:
+            return round(value / 1000)
+    for zone in Path("/sys/class/thermal").glob("thermal_zone*"):
+        try:
+            if (zone / "type").read_text().strip() == "x86_pkg_temp":
+                value = read_number(zone / "temp")
+                return round(value / 1000) if value else None
+        except OSError:
+            continue
+    return None
+
+
+def gpus() -> list:
+    """Each GPU's busy %, memory and temperature: NVIDIA's through nvidia-smi, AMD's from sysfs."""
+    found = []
+    out = run(["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+               "--format=csv,noheader,nounits"], 8)
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != 5:
+            continue
+        def num(text):
+            try:
+                return float(text)
+            except ValueError:
+                return None       # nvidia-smi prints [N/A] for what a card doesn't report
+        busy, used, total, temp = map(num, parts[1:])
+        found.append({"name": parts[0].removeprefix("NVIDIA ").removeprefix("GeForce "), "busy": busy,
+                      "memUsedGiB": round(used / 1024, 1) if used is not None else None,
+                      "memGiB": round(total / 1024, 1) if total is not None else None, "temp": temp})
+    for card in sorted(Path("/sys/class/drm").glob("card[0-9]*/device")):
+        busy = read_number(card / "gpu_busy_percent")
+        if busy is None:
+            continue
+        temp = next((read_number(t) for t in card.glob("hwmon/hwmon*/temp1_input")), None)
+        used, total = read_number(card / "mem_info_vram_used"), read_number(card / "mem_info_vram_total")
+        found.append({"name": "AMD GPU", "busy": busy, "temp": round(temp / 1000) if temp else None,
+                      "memUsedGiB": round(used / 2**30, 1) if used is not None else None,
+                      "memGiB": round(total / 2**30, 1) if total is not None else None})
+    return found
+
+
+def usage() -> dict:
+    """What the whole machine is doing, CI or not: CPU %, the busiest processes, GPUs and temperatures."""
+    try:
+        cpu, top = usage_mac() if sys.platform == "darwin" else usage_linux()
+    except OSError:
+        cpu, top = None, []
+    return {"cpu": cpu, "busiest": top, "cpuTemp": None if sys.platform == "darwin" else cpu_temp(), "gpus": gpus()}
+
+
 def agent() -> dict:
     """This machine's CI. A source (a command in agent.toml that prints JSON) can add jobs, finished jobs, machine
     fields such as `slots`, and whole machines of its own (`machines`, e.g. cloud runners this machine starts)."""
@@ -206,8 +374,8 @@ def agent() -> dict:
     config = read_toml(CONFIG_DIR / "agent.toml")
     jobs, recent = runner_services(now) if config.get("runner_services", True) else ([], [])
     snap = {"version": VERSION, "time": int(now), "host": socket.gethostname(), "cores": os.cpu_count(),
-            "load": round(os.getloadavg()[0], 1), "memFreeGiB": mem_free_gib(), "jobs": jobs, "recent": recent,
-            "machines": [], "errors": []}
+            "load": round(os.getloadavg()[0], 1), "memFreeGiB": mem_free_gib(), **usage(), "jobs": jobs,
+            "recent": recent, "machines": [], "errors": []}
     for command in config.get("sources", []):
         try:
             extra = run_source(command)
@@ -327,6 +495,9 @@ class Hub:
         machines += virtuals
         for machine in machines:
             machine["jobs"].sort(key=lambda j: j.get("since") or 0)
+            hot = heat(machine)
+            if hot:
+                machine["hot"] = hot
         self.sample(now, machines)
         jobs = [j for m in machines for j in m["jobs"]]
         history.sort(key=lambda r: r["finished"])
@@ -340,7 +511,13 @@ class Hub:
     def sample(self, now: float, machines: list) -> None:
         if self.samples and now - self.samples[-1]["t"] < SAMPLE_EVERY_S:
             return
-        point = {"t": int(now), **{m["name"]: {"load": m["load"]} for m in machines if m.get("load") is not None}}
+        point = {"t": int(now)}
+        for m in machines:
+            gpu = [g["busy"] for g in m.get("gpus") or [] if isinstance(g.get("busy"), (int, float))]
+            values = {"load": m.get("load"), "cpu": m.get("cpu"), "gpu": max(gpu) if gpu else None, "temp": m.get("cpuTemp")}
+            values = {k: v for k, v in values.items() if isinstance(v, (int, float))}
+            if values:
+                point[m["name"]] = values
         self.samples = [*self.samples, point][-SAMPLES_KEPT:]
         try:
             STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -357,6 +534,19 @@ class Hub:
             except Exception as error:      # keep serving the last good picture; the next pass may work
                 print(f"refresh failed: {error!r}", file=sys.stderr, flush=True)
             time.sleep(REFRESH_S)
+
+
+def heat(machine: dict) -> str | None:
+    """Why a machine is running hot, such as "CPU 96°C", or None. Heat is what spins the fans up, even when the CPU
+    looks mostly idle: a laptop chip can sit at 95°C with two cores busy."""
+    parts = []
+    temp = machine.get("cpuTemp")
+    if isinstance(temp, (int, float)) and temp >= CPU_HOT_C:
+        parts.append(f"CPU {temp:.0f}°C")
+    for gpu in machine.get("gpus") or []:
+        if isinstance(gpu, dict) and isinstance(gpu.get("temp"), (int, float)) and gpu["temp"] >= GPU_HOT_C:
+            parts.append(f"GPU {gpu['temp']:.0f}°C")
+    return ", ".join(parts) or None
 
 
 def page() -> bytes:
@@ -430,8 +620,11 @@ def demo() -> None:
                         "finished": int(t + length), "result": "failure" if rng.random() < 0.06 else "success",
                         "label": f"{m}-runner-{rng.randint(1, 4)}", "url": None})
         t += rng.expovariate(1 / 70)
-    samples = [{"t": int(start - 7200 + i * 30), **{m: {"load": round(4 + 3 * abs(((i + k * 40) % 80) - 40) / 40 + rng.random(), 1)}
-                                                    for k, m in enumerate(machines)}} for i in range(240)]
+    def point(i: int, k: int) -> dict:
+        wave = abs(((i + k * 40) % 80) - 40) / 40
+        return {"load": round(4 + 3 * wave + rng.random(), 1), "cpu": round(20 + 50 * wave + 5 * rng.random(), 1),
+                "temp": round(55 + 30 * wave) if k != 1 else round(92 + 4 * rng.random()), **({"gpu": round(40 + 50 * wave)} if k == 2 else {})}
+    samples = [{"t": int(start - 7200 + i * 30), **{m: point(i, k) for k, m in enumerate(machines)}} for i in range(240)]
 
     def body() -> bytes:
         now = time.time()
@@ -442,7 +635,11 @@ def demo() -> None:
             jobs = [{"repo": h["repo"], "job": h["job"], "state": "running", "since": h["started"], "label": h["label"],
                      "url": None} for h in live if h["machine"] == m]
             ms.append({"name": m, "ok": True, "cores": [16, 16, 32][k], "load": samples[-1][m]["load"],
-                       "memFreeGiB": [21.5, 9.8, 60.2][k], "jobs": jobs})
+                       "cpu": samples[-1][m]["cpu"], "cpuTemp": samples[-1][m]["temp"], "memFreeGiB": [21.5, 9.8, 60.2][k],
+                       "busiest": [{"name": "node build.js", "pid": 4242, "cpu": 180}] if k == 1 else [], "jobs": jobs,
+                       "gpus": [{"name": "RTX 4090", "busy": 64.0, "memUsedGiB": 14.2, "memGiB": 24.0, "temp": 71.0}] if k == 2 else []})
+            if ms[-1]["cpuTemp"] >= CPU_HOT_C:
+                ms[-1]["hot"] = f"CPU {ms[-1]['cpuTemp']}°C"
         ms.append({"name": "cloud", "ok": True, "virtual": True, "meter": {"label": "minutes left this month", "value": 1840, "max": 3000}, "jobs": []})
         return json.dumps({"version": VERSION, "updated": int(now), "running": sum(len(m["jobs"]) for m in ms), "starting": 0,
                            "machines": ms, "history": done, "recent": done[::-1][:12], "samples": samples}).encode()

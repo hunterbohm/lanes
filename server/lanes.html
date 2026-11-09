@@ -67,6 +67,13 @@
   .mmeta { color: var(--ink-3); font-size: 11px; margin-top: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .mmeta.err { color: var(--bad); white-space: normal; }
   .mmeta.warn { color: var(--ink-2); }
+  .use { display: grid; grid-template-columns: 26px minmax(40px, 1fr) 76px; column-gap: 7px; row-gap: 4px; align-items: center;
+         margin-top: 7px; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .use .meter { height: 5px; }
+  .use .v { white-space: nowrap; text-align: right; }
+  .warm { color: var(--warn); } .hot { color: var(--bad); font-weight: 600; }
+  .mmeta.hot { color: var(--bad); font-weight: 600; }
+  .heat { white-space: pre-line; margin-top: 6px; font-size: 11px; color: var(--bad); font-weight: 600; }
   .slots { display: flex; gap: 2px; height: 8px; }
   .slots i { flex: 1; border-radius: 2px; background: var(--track); }
   .meter { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
@@ -223,22 +230,64 @@
   }
 
   // ---- per machine: busy slots or load, a 2-hour load sparkline, or a source's own meter
+  // CPU % over 2 hours (a dashed line for the GPU where there is one); load on cores from a hub without CPU samples.
   function sparkline(m) {
-    const pts = status.samples.filter((s) => s[m.name]).map((s) => [s.t, s[m.name].load]);
+    const mine = status.samples.filter((s) => s[m.name]).map((s) => ({ t: s.t, ...s[m.name] }));
+    const byCpu = mine.some((p) => p.cpu != null);
+    const pts = mine.filter((p) => (byCpu ? p.cpu : p.load) != null).map((p) => [p.t, byCpu ? p.cpu : p.load]);
+    const gpuPts = mine.filter((p) => p.gpu != null).map((p) => [p.t, p.gpu]);
     const W = 96, H = 22;
     const svg = el('svg:svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` });
     if (pts.length < 2) return svg;
     const t0 = pts[0][0], t1 = pts[pts.length - 1][0], cores = m.cores || 1;
-    const hi = Math.max(cores, ...pts.map((p) => p[1]));
+    const hi = byCpu ? 100 : Math.max(cores, ...pts.map((p) => p[1]));
     const x = (t) => ((t - t0) / Math.max(1, t1 - t0)) * (W - 5);
-    const y = (v) => 2 + (H - 4) * (1 - v / hi);
-    svg.append(el('svg:line', { x1: 0, x2: W - 5, y1: y(cores), y2: y(cores), stroke: 'var(--grid)', 'stroke-width': 1 }));
-    const d = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join('');
+    const y = (v) => 2 + (H - 4) * (1 - Math.min(v, hi) / hi);
+    const path = (ps) => ps.map((p, i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join('');
+    svg.append(el('svg:line', { x1: 0, x2: W - 5, y1: y(byCpu ? 100 : cores), y2: y(byCpu ? 100 : cores), stroke: 'var(--grid)', 'stroke-width': 1 }));
+    const d = path(pts);
     svg.append(el('svg:path', { d: `${d}L${x(t1)},${H}L0,${H}Z`, fill: color(m.name), 'fill-opacity': 0.1 }));
+    if (gpuPts.length > 1) svg.append(el('svg:path', { d: path(gpuPts), fill: 'none', stroke: 'var(--ink-3)', 'stroke-width': 1.2, 'stroke-dasharray': '2 2' }));
     svg.append(el('svg:path', { d, fill: 'none', stroke: color(m.name), 'stroke-width': 1.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
     const last = pts[pts.length - 1];
     svg.append(el('svg:circle', { cx: x(last[0]), cy: y(last[1]), r: 3, fill: color(m.name), stroke: 'var(--surface)', 'stroke-width': 1.5 }));
-    return hoverable(svg, `${m.name} load, last ${dur(t1 - t0)}\nnow ${last[1]} on ${cores} cores · peak ${Math.max(...pts.map((p) => p[1]))}`);
+    const peak = Math.max(...pts.map((p) => p[1]));
+    const temps = mine.map((p) => p.temp).filter((v) => v != null);
+    const lines = [byCpu ? `${m.name} CPU, last ${dur(t1 - t0)}` : `${m.name} load, last ${dur(t1 - t0)}`,
+      byCpu ? `now ${Math.round(last[1])}% · peak ${Math.round(peak)}%` : `now ${last[1]} on ${cores} cores · peak ${peak}`];
+    if (gpuPts.length > 1) lines.push(`GPU (dashed) now ${Math.round(gpuPts[gpuPts.length - 1][1])}% · peak ${Math.round(Math.max(...gpuPts.map((p) => p[1])))}%`);
+    if (temps.length) lines.push(`CPU heat now ${temps[temps.length - 1]}°C · peak ${Math.max(...temps)}°C`);
+    return hoverable(svg, lines.join('\n'));
+  }
+
+  const HOT_C = 90, WARM_C = 80;
+  const tempText = (c, hot = HOT_C) => (c == null ? null
+    : el('span', { class: c >= hot ? 'hot' : c >= WARM_C ? 'warm' : null, text: `${Math.round(c)}°C` }));
+  const join = (...parts) => {
+    const out = [];
+    for (const p of parts.filter((x) => x != null && x !== '')) out.push(...(out.length ? [' · ', p] : [p]));
+    return out;
+  };
+
+  // What the whole machine is doing, CI or not: CPU and each GPU as small meters, with heat and the busiest programs.
+  function usage(m) {
+    if (m.cpu == null && !(m.gpus || []).length) return null;
+    const grid = el('div', { class: 'use' });
+    if (m.cpu != null) {
+      grid.append(el('span', { text: 'CPU' }), meter(m.cpu / 100, m.cpuTemp >= HOT_C ? 'var(--bad)' : color(m.name), 'CPU busy, every core'),
+        el('span', { class: 'v' }, ...join(`${Math.round(m.cpu)}%`, tempText(m.cpuTemp))));
+    }
+    const notes = [];
+    for (const g of m.gpus || []) {
+      grid.append(el('span', { text: 'GPU' }), meter((g.busy || 0) / 100, g.temp >= 85 ? 'var(--bad)' : color(m.name), g.name),
+        el('span', { class: 'v' }, ...join(g.busy != null ? `${Math.round(g.busy)}%` : null, tempText(g.temp, 85))));
+      if (g.memUsedGiB != null && g.memGiB) notes.push(`GPU memory ${g.memUsedGiB} of ${Math.round(g.memGiB)} GB`);
+    }
+    const wrap = el('div', {}, grid);
+    if (notes.length) wrap.append(el('div', { class: 'mmeta', text: notes.join(' · ') }));
+    const busy = (m.busiest || []).map((p) => `${p.name} ${p.cpu}%`);
+    if (busy.length) wrap.append(el('div', { class: 'mmeta', title: busy.join('\n'), text: `busiest: ${busy.join(', ')}` }));
+    return wrap;
   }
 
   function meter(share, fill, title) {
@@ -265,7 +314,7 @@
           const share = m.meter.value / m.meter.max;
           middle.append(meter(share, share < 0.15 ? 'var(--bad)' : share < 0.3 ? 'var(--warn)' : color(m.name), m.meter.label));
           lines.push(`${m.meter.value} of ${m.meter.max} ${m.meter.label || ''}`.trim());
-        } else if (m.load != null && m.cores) {
+        } else if (m.load != null && m.cores && m.cpu == null) {
           middle.append(meter(m.load / m.cores, color(m.name), 'load against cores'));
           lines.push(`load ${m.load} on ${m.cores} cores`);
         }
@@ -273,6 +322,9 @@
         if (m.slots && others) lines.push(`${others} on runner services`);
         if (m.note) lines.push(m.note);
         if (lines.length) middle.append(el('div', { class: 'mmeta', text: lines.join(' · ') }));
+        if (m.hot) middle.append(el('div', { class: 'mmeta hot', text: `Running hot: ${m.hot}` }));
+        const use = usage(m);
+        if (use) middle.append(use);
         for (const w of m.warnings || []) middle.append(el('div', { class: 'mmeta warn', text: `⚠ ${w}` }));
         if (m.load != null) {
           right.append(sparkline(m), el('div', { class: 'mmeta', style: { textAlign: 'right' },
@@ -413,6 +465,16 @@
     if (host === 'embed') parent.postMessage({ type: 'lanes-height', height }, '*');
   }
 
+  // Fans roaring with no CI running: say which machine is hot and what is busy there, at the top.
+  function heatBanner() {
+    const hot = status.machines.filter((m) => m.hot);
+    if (!hot.length) return null;
+    return el('div', { class: 'heat' }, hot.map((m) => {
+      const top = (m.busiest || [])[0];
+      return `${m.name} is running hot (${m.hot})${top ? `; busiest: ${top.name} ${top.cpu}%` : ''}`;
+    }).join('\n'));
+  }
+
   function render() {
     hideTip();
     if (!status) {
@@ -432,8 +494,9 @@
     app.replaceChildren(
       el('div', { class: 'head' }, el('div', { class: 'hero', text: status.running }), label, legend),
       el('div', { class: 'fresh' }),
+      ...[heatBanner()].filter(Boolean),
       el('section', {}, el('h2', {}, 'Jobs at once', el('span', { class: 'aside', text: 'last 6 hours' })), concurrency(now, all)),
-      el('section', {}, el('h2', {}, 'Machines', el('span', { class: 'aside', text: 'load, last 2 hours' })), machineRows()),
+      el('section', {}, el('h2', {}, 'Machines', el('span', { class: 'aside', text: 'whole machine, CI or not · CPU, last 2 hours' })), machineRows()),
       el('section', {}, el('h2', {}, 'Running now'), runningList(now)),
       el('section', {}, el('h2', {}, 'Last hour', el('span', { class: 'aside', text: 'bright: running · faded: passed · red: failed' })), timeline(now, all)),
       el('section', {}, el('h2', {}, 'Finished', el('span', { class: 'aside', text: 'last 6 hours, oldest first' })), results()),
