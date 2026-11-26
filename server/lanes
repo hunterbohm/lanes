@@ -16,6 +16,8 @@ It only reads: it never starts, stops or changes a runner. Python 3.11+, no pack
 from __future__ import annotations
 
 import calendar
+import fnmatch
+import html
 import json
 import os
 import plistlib
@@ -27,6 +29,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 try:
     import tomllib
 except ImportError:      # Python before 3.11: only `lanes demo` works
@@ -34,13 +39,17 @@ except ImportError:      # Python before 3.11: only `lanes demo` works
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "lanes"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "lanes"
 PAGE_PLACES = (Path(__file__).resolve().parent / "lanes.html", Path.home() / ".local/share/lanes/lanes.html")
 RECENT_S = 6 * 3600              # finished jobs are kept this long
 REFRESH_S = 5
 LIST_EVERY_S = 60               # how often `machines_command` is re-run
+STATE_MACHINE_EVERY_S = 300     # how often `/state-machine` is re-read from the queue service
+PR_REFRESH_DEFAULT_S = 45       # default GitHub PR poll interval
+MEDIA_MAX_BYTES = 100 * 1024 * 1024
+MEDIA_CHUNK_BYTES = 65536
 SAMPLE_EVERY_S = 30              # CPU, GPU and heat samples for the sparklines, kept 2 hours
 SAMPLES_KEPT = 240
 CPU_HOT_C = 90                   # a machine past these is flagged as running hot
@@ -48,6 +57,35 @@ GPU_HOT_C = 85
 RESULTS = {"succeeded": "success", "success": "success", "failed": "failure", "failure": "failure",
            "canceled": "cancelled", "cancelled": "cancelled"}
 LOG_LINE = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ): (?:Running job: (.+)|Job (.+) completed with result: (\w+))$")
+VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v")
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+GITHUB_AUTH_HOSTS = frozenset({"github.com", "raw.githubusercontent.com", "api.github.com"})
+GITHUB_ASSET_HOSTS = frozenset({
+    "github.com",
+    "raw.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "private-user-images.githubusercontent.com",
+    "media.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "camo.githubusercontent.com",
+})
+GITHUB_S3_ASSET_RE = re.compile(r"^github-production-[a-z0-9-]+\.s3(?:\.[a-z0-9-]+)?\.amazonaws\.com$")
+USER_ATTACHMENT_RE = re.compile(r"^/user-attachments/assets/([A-Za-z0-9_-]{8,128})$")
+RANGE_HEADER_RE = re.compile(r"^bytes=\d*-\d*(?:,\s*\d*-\d*)*$")
+UNSAFE_MEDIA_TYPES = ("text/html", "application/xhtml", "image/svg+xml", "application/javascript", "text/javascript")
+DEFAULT_STATE_MACHINE = {
+    "states": ["QUEUED", "CLAIMED", "PROVISIONING", "RUNNING", "TEARING_DOWN", "DONE", "FAILED", "CANCELLED", "LOST"],
+    "terminal": ["DONE", "FAILED", "CANCELLED"],
+    "transitions": {
+        "QUEUED": {"claim": "CLAIMED", "start_external": "RUNNING", "complete": "DONE", "fail": "FAILED", "cancel": "CANCELLED"},
+        "CLAIMED": {"provision": "PROVISIONING", "start": "RUNNING", "release": "QUEUED", "lease_expired": "LOST"},
+        "PROVISIONING": {"start": "RUNNING", "release": "QUEUED", "provision_failed": "LOST", "lease_expired": "LOST"},
+        "RUNNING": {"teardown": "TEARING_DOWN", "complete": "DONE", "fail": "FAILED", "cancel": "CANCELLED", "host_lost": "LOST"},
+        "TEARING_DOWN": {"complete": "DONE", "fail": "FAILED", "cancel": "CANCELLED", "lease_expired": "LOST"},
+        "LOST": {"requeue": "QUEUED", "start": "RUNNING", "complete": "DONE", "fail": "FAILED", "cancel": "CANCELLED"},
+    },
+    "edges": [],
+}
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -421,20 +459,786 @@ def agent() -> dict:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# queue + pull requests + safe media proxy (optional hub integrations)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    """Parse KEY=VALUE lines from an env file (ignoring comments and blank lines)."""
+    values: dict[str, str] = {}
+    try:
+        text = path.expanduser().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return values
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        key, val = line.split("=", 1)
+        key = key.strip()
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+            val = val[1:-1]
+        if key:
+            values[key] = val
+    return values
+
+
+def normalize_queue_url(url: str) -> str:
+    """Turn ws(s)://.../listen or https://.../ into an HTTP(S) base URL."""
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    parsed = urllib.parse.urlsplit(raw)
+    scheme = {"wss": "https", "ws": "http"}.get(parsed.scheme.lower(), parsed.scheme.lower())
+    if scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+    path = parsed.path.rstrip("/")
+    if path.endswith("/listen"):
+        path = path[:-7]
+    return urllib.parse.urlunsplit((scheme, parsed.netloc, path, "", ""))
+
+
+def iso_ts(text: str | None) -> int | None:
+    if not isinstance(text, str) or len(text) < 19:
+        return None
+    try:
+        return calendar.timegm(time.strptime(text[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+
+
+def _job_actions_url(item: dict) -> str | None:
+    repo = item.get("repo") or ""
+    run_id = item.get("run_id")
+    job_id = item.get("job_id")
+    if repo and run_id and job_id:
+        return web_url(f"https://github.com/{repo}/actions/runs/{run_id}/job/{job_id}")
+    if repo and run_id:
+        return web_url(f"https://github.com/{repo}/actions/runs/{run_id}")
+    return web_url(f"https://github.com/{repo}/actions") if repo else None
+
+
+def format_queue_snapshot(status_data: dict, state_machine: dict | None, now: float) -> dict:
+    """Normalize a queue service `/status` + `/state-machine` response for the browser."""
+    workers = []
+    for w in status_data.get("workers") or []:
+        if not isinstance(w, dict) or not w.get("worker_id"):
+            continue
+        lanes_list = w.get("lanes")
+        if not isinstance(lanes_list, list):
+            try:
+                lanes_list = json.loads(w.get("lanes_json") or "[]")
+            except (ValueError, TypeError):
+                lanes_list = []
+        workers.append({
+            "worker_id": str(w["worker_id"]),
+            "online": bool(w.get("online", True)),
+            "age_s": w.get("age_s"),
+            "lanes": [str(x) for x in lanes_list if isinstance(x, str)],
+            "free_cpus": w.get("free_cpus"),
+            "max_cpus": w.get("max_cpus"),
+            "free_mem_gib": w.get("free_mem_gib"),
+            "empty_mem_gib": w.get("empty_mem_gib"),
+            "free_disk_gib": w.get("free_disk_gib"),
+            "empty_disk_gib": w.get("empty_disk_gib"),
+            "load_1m": w.get("load_1m"),
+            "max_load": w.get("max_load"),
+            "temp_c": w.get("temp_c"),
+            "max_temp_c": w.get("max_temp_c"),
+            "draining": bool(w.get("draining")),
+            "paused_reason": str(w.get("paused_reason") or ""),
+            "running_jobs": int(w.get("running_jobs") or 0),
+            "max_concurrent": int(w.get("max_concurrent") or 0),
+            "primary_local": bool(w.get("primary_local")),
+            "boat_day_left": w.get("boat_day_left"),
+            "boat_hour_left": w.get("boat_hour_left"),
+        })
+
+    def norm_job(j: dict) -> dict:
+        queued_at = j.get("queued_at")
+        waited = j.get("waited_s")
+        if waited is None and isinstance(queued_at, (int, float)):
+            waited = max(0, int(now - queued_at))
+        return {
+            "job_id": j.get("job_id"),
+            "repo": str(j.get("repo") or ""),
+            "run_id": j.get("run_id"),
+            "job_name": str(j.get("job_name") or j.get("job_key") or ""),
+            "head_branch": str(j.get("head_branch") or ""),
+            "is_release": bool(j.get("is_release")),
+            "state": str(j.get("state") or ""),
+            "claimed_by": j.get("claimed_by"),
+            "claimed_lane": j.get("claimed_lane"),
+            "size_name": j.get("size_name"),
+            "queued_at": queued_at,
+            "claimed_at": j.get("claimed_at"),
+            "started_at": j.get("started_at"),
+            "finished_at": j.get("finished_at"),
+            "waited_s": waited,
+            "wait_reason": str(j.get("wait_reason") or ""),
+            "attempt": int(j.get("attempt") or 1),
+            "url": _job_actions_url(j),
+        }
+
+    queued = [norm_job(j) for j in status_data.get("queued") or [] if isinstance(j, dict)]
+    running = [norm_job(j) for j in status_data.get("running") or [] if isinstance(j, dict)]
+    recent = [norm_job(j) for j in status_data.get("recent") or [] if isinstance(j, dict)][:40]
+    sm = state_machine if isinstance(state_machine, dict) and state_machine.get("states") else DEFAULT_STATE_MACHINE
+    counts = {str(s): 0 for s in sm.get("states") or []}
+    for bucket in (queued, running, recent):
+        for item in bucket:
+            st = item.get("state")
+            if st in counts:
+                counts[st] += 1
+    return {
+        "ok": True,
+        "error": None,
+        "updated": int(status_data.get("now") or now),
+        "workers": workers,
+        "running": running,
+        "queued": queued,
+        "recent": recent,
+        "counts": counts,
+        "state_machine": sm,
+    }
+
+
+class QueueClient:
+    """Server-side reader for a global CI queue's read-only `/status` and `/state-machine` endpoints."""
+
+    def __init__(self, config: dict) -> None:
+        self.url_override = str(config.get("url") or "").strip()
+        self.url_env = str(config.get("url_env") or "CI_WAKE_URL")
+        self.token_env = str(config.get("token_env") or "CI_WAKE_TOKEN")
+        self.token_env_file = Path(config["token_env_file"]).expanduser() if config.get("token_env_file") else None
+        self.timeout_s = float(config.get("timeout_s") or 4.0)
+        self.state_machine: dict | None = None
+        self.sm_fetched_at = 0.0
+        self.last_good: dict | None = None
+
+    def _credentials(self) -> tuple[str, str]:
+        env_vals = read_env_file(self.token_env_file) if self.token_env_file else {}
+        raw_url = self.url_override or env_vals.get(self.url_env) or os.environ.get(self.url_env, "")
+        token = env_vals.get(self.token_env) or os.environ.get(self.token_env, "")
+        return normalize_queue_url(raw_url), token
+
+    def _get_json(self, base: str, path: str, token: str) -> dict:
+        headers = {"User-Agent": f"lanes/{VERSION}"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(f"{base}{path}", headers=headers)
+        with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        if not isinstance(data, dict):
+            raise ValueError("queue response was not a JSON object")
+        return data
+
+    def fetch(self, now: float) -> dict:
+        base, token = self._credentials()
+        if not base:
+            return {"ok": False, "error": "queue url not configured", "updated": int(now),
+                    "workers": [], "running": [], "queued": [], "recent": [], "counts": {}, "state_machine": DEFAULT_STATE_MACHINE}
+        if self.state_machine is None or now - self.sm_fetched_at >= STATE_MACHINE_EVERY_S:
+            try:
+                self.state_machine = self._get_json(base, "/state-machine", token)
+                self.sm_fetched_at = now
+            except Exception:
+                pass
+        try:
+            data = self._get_json(base, "/status", token)
+            snap = format_queue_snapshot(data, self.state_machine, now)
+            self.last_good = snap
+            return snap
+        except Exception as error:
+            if self.last_good is not None:
+                return {**self.last_good, "ok": False, "error": f"queue unreachable: {type(error).__name__}"}
+            return {"ok": False, "error": f"queue unreachable: {type(error).__name__}", "updated": int(now),
+                    "workers": [], "running": [], "queued": [], "recent": [], "counts": {},
+                    "state_machine": self.state_machine or DEFAULT_STATE_MACHINE}
+
+
+def is_allowed_media_url(url: str, owners: list[str]) -> str | None:
+    """Validate and normalize a GitHub proof media URL against configured owners.
+
+    Rewrites github.com/<owner>/<repo>/(blob|raw)/... to raw.githubusercontent.com/<owner>/<repo>/... so Bearer token
+    auth works for private repositories. Returns None for any disallowed host, owner, scheme, or path traversal.
+    """
+    if not isinstance(url, str):
+        return None
+    raw = url.strip()
+    if not raw:
+        return None
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme.lower() != "https" or parsed.username or parsed.password:
+        return None
+    if parsed.port not in (None, 443):
+        return None
+    host = (parsed.hostname or "").lower()
+    path = parsed.path or ""
+    segments = [seg for seg in path.split("/") if seg]
+    if any(seg in (".", "..") or "%2e" in seg.lower() or "%2f" in seg.lower() for seg in segments):
+        return None
+    allowed_owners = {o.strip().lower() for o in owners if isinstance(o, str) and o.strip()}
+    if host == "github.com":
+        if USER_ATTACHMENT_RE.match(path):
+            return f"https://github.com{path}"
+        if len(segments) >= 5 and segments[2] in ("raw", "blob") and segments[0].lower() in allowed_owners:
+            owner, repo = segments[0], segments[1]
+            rest = "/".join(segments[3:])
+            return f"https://raw.githubusercontent.com/{owner}/{repo}/{rest}"
+        return None
+    if host == "raw.githubusercontent.com":
+        if len(segments) >= 4 and segments[0].lower() in allowed_owners:
+            return f"https://raw.githubusercontent.com/{'/'.join(segments)}"
+        return None
+    return None
+
+
+def is_allowed_redirect_host(host: str) -> bool:
+    h = (host or "").lower()
+    return h in GITHUB_ASSET_HOSTS or bool(GITHUB_S3_ASSET_RE.match(h))
+
+
+def sanitize_media_content_type(content_type: str | None) -> str:
+    ct = (content_type or "application/octet-stream").split(";")[0].strip().lower()
+    if not ct or any(ct.startswith(bad) for bad in UNSAFE_MEDIA_TYPES):
+        return "application/octet-stream"
+    return ct
+
+
+def _clean_markdown_line(text: str) -> str:
+    s = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    s = re.sub(r"!\[([^\]]*)\]\([^)]+\)", "", s)
+    s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"https?://\S+", "", s)
+    s = re.sub(r"[`*_~]+", "", s)
+    s = re.sub(r"\s+", " ", s).strip(" -*•\t\r\n")
+    return s
+
+
+def extract_pr_summary(body: str) -> tuple[str, str]:
+    """Pull a concise plain-English (summary, why) from a PR description."""
+    if not isinstance(body, str) or not body.strip():
+        return "", ""
+    cleaned = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    cleaned = re.sub(r"```.*?```", "", cleaned, flags=re.S)
+    sections: dict[str, list[str]] = {"_intro": []}
+    current = "_intro"
+    for line in cleaned.splitlines():
+        heading = re.match(r"^\s*#{1,4}\s+(.+?)\s*$", line)
+        if heading:
+            current = heading.group(1).strip().lower()
+            sections.setdefault(current, [])
+        else:
+            sections.setdefault(current, []).append(line)
+
+    def pick_text(keys: tuple[str, ...]) -> str:
+        for name, lines in sections.items():
+            if any(k in name for k in keys):
+                items = [_clean_markdown_line(ln) for ln in lines]
+                items = [ln for ln in items if ln and not ln.startswith("|") and not set(ln) <= {"-", ":", "|", " "}]
+                if items:
+                    joined = " · ".join(items[:2])
+                    return joined[:237] + "..." if len(joined) > 240 else joined
+        return ""
+
+    summary = pick_text(("what changed", "summary", "changes", "overview", "what this does"))
+    why = pick_text(("why", "motivation", "problem", "context", "background"))
+    if not summary:
+        intro = [_clean_markdown_line(ln) for ln in sections.get("_intro", [])]
+        intro = [ln for ln in intro if ln and not ln.startswith("|") and not set(ln) <= {"-", ":", "|", " "}]
+        if intro:
+            joined = " ".join(intro[:2])
+            summary = joined[:237] + "..." if len(joined) > 240 else joined
+        elif why:
+            summary, why = why, ""
+    if why and why == summary:
+        why = ""
+    return summary, why
+
+
+def _label_from_url(url: str, fallback: str) -> str:
+    path = urllib.parse.urlsplit(url).path
+    if USER_ATTACHMENT_RE.match(path):
+        return fallback
+    stem = Path(urllib.parse.unquote(path)).stem
+    pretty = re.sub(r"[-_]+", " ", stem).strip()
+    return pretty[:48] if pretty else fallback
+
+
+def _ext_kind(url: str) -> str | None:
+    lower = urllib.parse.urlsplit(url).path.lower()
+    if lower.endswith(VIDEO_EXTS):
+        return "video"
+    if lower.endswith(IMAGE_EXTS):
+        return "image"
+    return None
+
+
+def extract_pr_media(body: str, comments: list[dict], owners: list[str], probe_kind=None) -> list[dict]:
+    """Extract allowlisted proof videos and images from a PR body and its comments."""
+    found: dict[str, dict] = {}
+    order: list[str] = []
+
+    def add(raw_url: str, hint_kind: str | None, label: str, source: str) -> None:
+        cleaned_url = html.unescape(raw_url.strip().rstrip(".,;"))
+        norm = is_allowed_media_url(cleaned_url, owners)
+        if not norm:
+            return
+        ext = _ext_kind(norm)
+        is_attachment = bool(USER_ATTACHMENT_RE.match(urllib.parse.urlsplit(norm).path))
+        if not ext and not is_attachment:
+            return
+        kind = ext or hint_kind
+        if kind is None and is_attachment:
+            kind = probe_kind(norm) if probe_kind else "video"
+        if kind not in ("video", "image"):
+            kind = "video" if is_attachment else "image"
+        nice_label = label.strip()[:60] if label and label.strip() else _label_from_url(
+            norm, "Proof video" if kind == "video" else "Screenshot"
+        )
+        if norm in found:
+            if found[norm]["kind"] != "video" and kind == "video":
+                found[norm]["kind"] = "video"
+            if label and label.strip() and found[norm]["label"] in ("Proof video", "Screenshot"):
+                found[norm]["label"] = nice_label
+            return
+        order.append(norm)
+        found[norm] = {
+            "kind": kind,
+            "label": nice_label,
+            "src": f"/media?url={urllib.parse.quote(norm, safe='')}",
+            "original_url": cleaned_url,
+            "source": source,
+        }
+
+    chunks = [("body", body or "")] + [("comment", (c.get("body") or "")) for c in comments if isinstance(c, dict)]
+    for source, text in chunks:
+        if not text:
+            continue
+        for m in re.finditer(r"<(?:video|source)\b[^>]*?\bsrc=[\"']([^\"']+)[\"']", text, re.I):
+            add(m.group(1), "video", "", source)
+        for m in re.finditer(r"<img\b([^>]+)>", text, re.I):
+            attrs = m.group(1)
+            src_m = re.search(r"\bsrc=[\"']([^\"']+)[\"']", attrs, re.I)
+            alt_m = re.search(r"\balt=[\"']([^\"']*)[\"']", attrs, re.I)
+            if src_m:
+                add(src_m.group(1), "image", alt_m.group(1) if alt_m else "", source)
+        for m in re.finditer(r"!\[([^\]]*)\]\((https://[^)\s]+)\)", text):
+            add(m.group(2), _ext_kind(m.group(2)) or "image", m.group(1), source)
+        for m in re.finditer(r"(?<!!)\[([^\]]+)\]\((https://[^)\s]+)\)", text):
+            add(m.group(2), _ext_kind(m.group(2)), m.group(1), source)
+        for m in re.finditer(r"https://[^\s\"'<>)\]]+", text):
+            url = m.group(0)
+            if _ext_kind(url) or "/user-attachments/assets/" in url:
+                add(url, _ext_kind(url), "", source)
+
+    items = [found[u] for u in order]
+    # Videos first so the primary proof player leads the card.
+    items.sort(key=lambda item: (0 if item["kind"] == "video" else 1))
+    return items[:12]
+
+
+def summarize_ci_checks(rollup: dict | None) -> dict:
+    """Summarize GitHub statusCheckRollup into clean counts and a compact check list."""
+    if not isinstance(rollup, dict):
+        return {"state": "none", "passed": 0, "running": 0, "failed": 0, "pending": 0, "total": 0, "checks": []}
+    contexts = (rollup.get("contexts") or {}).get("nodes") or []
+    passed = running = failed = pending = 0
+    checks = []
+    for node in contexts:
+        if not isinstance(node, dict):
+            continue
+        typename = node.get("__typename")
+        if typename == "CheckRun":
+            name = str(node.get("name") or "check")
+            status = str(node.get("status") or "").upper()
+            concl = str(node.get("conclusion") or "").upper()
+            url = web_url(node.get("detailsUrl"))
+            if status in ("IN_PROGRESS",):
+                st = "running"
+                running += 1
+            elif status in ("QUEUED", "WAITING", "PENDING", "REQUESTED"):
+                st = "pending"
+                pending += 1
+            elif concl in ("SUCCESS", "NEUTRAL", "SKIPPED"):
+                st = "passing"
+                passed += 1
+            elif concl in ("FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "CANCELLED", "STALE"):
+                st = "failing"
+                failed += 1
+            else:
+                st = "pending"
+                pending += 1
+            checks.append({"name": name, "state": st, "url": url})
+        elif typename == "StatusContext":
+            name = str(node.get("context") or "status")
+            raw_state = str(node.get("state") or "").upper()
+            url = web_url(node.get("targetUrl"))
+            if raw_state == "SUCCESS":
+                st = "passing"
+                passed += 1
+            elif raw_state in ("FAILURE", "ERROR"):
+                st = "failing"
+                failed += 1
+            else:
+                st = "pending"
+                pending += 1
+            checks.append({"name": name, "state": st, "url": url})
+    total = passed + running + failed + pending
+    raw_overall = str(rollup.get("state") or "").upper()
+    if failed > 0 or raw_overall in ("FAILURE", "ERROR"):
+        overall = "failing"
+    elif running > 0:
+        overall = "running"
+    elif pending > 0 or raw_overall == "PENDING":
+        overall = "pending"
+    elif passed > 0 or raw_overall == "SUCCESS":
+        overall = "passing"
+    else:
+        overall = "none"
+    rank = {"failing": 0, "running": 1, "pending": 2, "passing": 3}
+    checks.sort(key=lambda c: (rank.get(c["state"], 4), c["name"].lower()))
+    return {"state": overall, "passed": passed, "running": running, "failed": failed, "pending": pending,
+            "total": total, "checks": checks[:25]}
+
+
+PR_GRAPHQL_QUERY = """
+query($q: String!, $first: Int!, $after: String) {
+  search(query: $q, type: ISSUE, first: $first, after: $after) {
+    issueCount
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        isDraft
+        createdAt
+        updatedAt
+        headRefName
+        baseRefName
+        additions
+        deletions
+        changedFiles
+        mergeable
+        reviewDecision
+        body
+        author { login }
+        repository { nameWithOwner }
+        files(first: 8) { nodes { path additions deletions } }
+        comments(last: 10) { nodes { body } }
+        commits(last: 1) {
+          nodes {
+            commit {
+              statusCheckRollup {
+                state
+                contexts(first: 40) {
+                  nodes {
+                    __typename
+                    ... on CheckRun { name status conclusion detailsUrl }
+                    ... on StatusContext { context state targetUrl }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+class PullRequestPoller:
+    """Background GitHub GraphQL poller for open PRs + SSRF-safe media proxy for private proof videos/images."""
+
+    def __init__(self, config: dict) -> None:
+        self.owners = [str(o).strip() for o in config.get("owners") or [] if isinstance(o, str) and o.strip()]
+        self.exclude_repos = [str(p).strip().lower() for p in config.get("exclude_repos") or [] if isinstance(p, str) and p.strip()]
+        self.refresh_s = max(15, int(config.get("refresh_s") or PR_REFRESH_DEFAULT_S))
+        self.max_prs = max(1, min(200, int(config.get("max_prs") or 120)))
+        self.page_size = max(10, min(50, int(config.get("page_size") or 40)))
+        self.token_command = str(config.get("token_command") or "gh auth token")
+        self.token_env = str(config.get("token_env") or "GITHUB_TOKEN")
+        self._token = ""
+        self._token_at = 0.0
+        self._token_lock = threading.Lock()
+        self._kind_cache: dict[str, str] = {}
+        self._owner_cache: dict[str, list[dict]] = {}
+        self.summary: dict | None = (
+            {"open": 0, "repos": 0, "with_proof": 0, "failing": 0, "merge_ready": 0, "updated": int(time.time()), "error": None}
+            if self.owners else None
+        )
+        self.body = json.dumps({
+            "configured": bool(self.owners), "ok": True, "error": None, "updated": int(time.time()),
+            "owners": self.owners, "total": 0, "repos": [], "prs": [],
+        }).encode()
+
+    def get_token(self, force: bool = False) -> str:
+        with self._token_lock:
+            now = time.time()
+            if not force and self._token and now - self._token_at < 600:
+                return self._token
+            tok = os.environ.get(self.token_env, "").strip()
+            if not tok and self.token_command:
+                try:
+                    out = subprocess.run(shlex.split(self.token_command), capture_output=True, text=True, timeout=10).stdout
+                    tok = out.strip()
+                except (OSError, subprocess.SubprocessError):
+                    tok = ""
+            if tok:
+                self._token = tok
+                self._token_at = now
+            return self._token
+
+    def open_media_upstream(self, url: str, range_header: str | None = None, head: bool = False):
+        """Fetch an allowlisted GitHub media URL, following redirects without leaking auth to S3/CDN hosts."""
+        norm = is_allowed_media_url(url, self.owners)
+        if not norm:
+            return 403, {"Content-Type": "text/plain"}, None
+        token = self.get_token()
+        cur = norm
+        safe_range = range_header.strip() if range_header and RANGE_HEADER_RE.match(range_header.strip()) else None
+        for _ in range(6):
+            parsed = urllib.parse.urlsplit(cur)
+            host = (parsed.hostname or "").lower()
+            if parsed.scheme.lower() != "https" or parsed.port not in (None, 443) or not is_allowed_redirect_host(host):
+                return 403, {"Content-Type": "text/plain"}, None
+            headers = {"User-Agent": f"lanes/{VERSION}"}
+            if token and host in GITHUB_AUTH_HOSTS:
+                headers["Authorization"] = f"Bearer {token}"
+            if safe_range:
+                headers["Range"] = safe_range
+            req = urllib.request.Request(cur, headers=headers, method="HEAD" if head else "GET")
+            try:
+                resp = _NO_REDIRECT_OPENER.open(req, timeout=15)
+                return resp.status, dict(resp.headers.items()), resp
+            except urllib.error.HTTPError as err:
+                loc = err.headers.get("Location") if err.headers else None
+                if err.code in (301, 302, 303, 307, 308) and loc:
+                    cur = urllib.parse.urljoin(cur, loc)
+                    err.close()
+                    continue
+                code = err.code
+                err.close()
+                return code, {"Content-Type": "text/plain"}, None
+            except OSError:
+                return 502, {"Content-Type": "text/plain"}, None
+        return 502, {"Content-Type": "text/plain"}, None
+
+    def probe_media_kind(self, norm_url: str) -> str:
+        cached = self._kind_cache.get(norm_url)
+        if cached:
+            return cached
+        status, headers, resp = self.open_media_upstream(norm_url, range_header="bytes=0-0")
+        if resp is not None:
+            resp.close()
+        ct = ""
+        for k, v in headers.items():
+            if k.lower() == "content-type":
+                ct = v.lower()
+                break
+        if status in (200, 206):
+            kind = "image" if ct.startswith("image/") else "video"
+            self._kind_cache[norm_url] = kind
+            return kind
+        return "video"
+
+    def _query_owner_page(self, owner: str, limit: int, token: str, after: str | None = None) -> tuple[list[dict], str | None]:
+        q = f"is:pr is:open user:{owner} sort:updated-desc"
+        payload = json.dumps({"query": PR_GRAPHQL_QUERY, "variables": {"q": q, "first": limit, "after": after}}).encode()
+        req = urllib.request.Request(
+            "https://api.github.com/graphql",
+            data=payload,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": f"lanes/{VERSION}"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        search = (data.get("data") or {}).get("search") or {}
+        nodes = [n for n in (search.get("nodes") or [])
+                 if isinstance(n, dict) and n.get("number") and (n.get("repository") or {}).get("nameWithOwner")]
+        page_info = search.get("pageInfo") or {}
+        next_cursor = page_info.get("endCursor") if page_info.get("hasNextPage") else None
+        return nodes, next_cursor
+
+    def _query_owner(self, owner: str, limit: int, token: str) -> list[dict]:
+        """Fetch open PRs for one owner in small GraphQL pages so GitHub never 502s on node complexity."""
+        out: list[dict] = []
+        cursor: str | None = None
+        while len(out) < limit:
+            batch = min(self.page_size, limit - len(out))
+            nodes, cursor = self._query_owner_page(owner, batch, token, after=cursor)
+            out.extend(nodes)
+            if not cursor or not nodes:
+                break
+        return out
+
+    def normalize_pr(self, node: dict) -> dict:
+        repo = node["repository"]["nameWithOwner"]
+        number = int(node["number"])
+        author = ((node.get("author") or {}).get("login")) or "unknown"
+        is_bot = author.lower().endswith("[bot]") or author.lower() in ("dependabot", "renovate", "github-actions")
+        head_ref = str(node.get("headRefName") or "")
+        is_release = head_ref.startswith(("merge-train/", "release/", "hotfix/"))
+        body = str(node.get("body") or "")
+        comments = ((node.get("comments") or {}).get("nodes")) or []
+        summary, why = extract_pr_summary(body)
+        media = extract_pr_media(body, comments, self.owners, probe_kind=self.probe_media_kind)
+        commits = ((node.get("commits") or {}).get("nodes")) or []
+        rollup = ((commits[0].get("commit") or {}).get("statusCheckRollup")) if commits and isinstance(commits[0], dict) else None
+        ci = summarize_ci_checks(rollup)
+        review_decision = str(node.get("reviewDecision") or "")
+        mergeable = str(node.get("mergeable") or "")
+        is_draft = bool(node.get("isDraft"))
+        merge_ready = (
+            not is_draft
+            and ci["state"] == "passing"
+            and mergeable != "CONFLICTING"
+            and review_decision in ("", "APPROVED")
+        )
+        files = [
+            {"path": str(f.get("path") or ""), "additions": int(f.get("additions") or 0), "deletions": int(f.get("deletions") or 0)}
+            for f in ((node.get("files") or {}).get("nodes")) or [] if isinstance(f, dict) and f.get("path")
+        ]
+        return {
+            "id": f"{repo}#{number}",
+            "repo": repo,
+            "number": number,
+            "title": str(node.get("title") or ""),
+            "url": web_url(node.get("url")),
+            "author": author,
+            "is_bot": is_bot,
+            "is_draft": is_draft,
+            "is_release": is_release,
+            "head_ref": head_ref,
+            "base_ref": str(node.get("baseRefName") or "main"),
+            "created_at": iso_ts(node.get("createdAt")),
+            "updated_at": iso_ts(node.get("updatedAt")),
+            "additions": int(node.get("additions") or 0),
+            "deletions": int(node.get("deletions") or 0),
+            "changed_files": int(node.get("changedFiles") or len(files)),
+            "files": files,
+            "summary": summary,
+            "why": why,
+            "review_decision": review_decision,
+            "mergeable": mergeable,
+            "merge_ready": merge_ready,
+            "ci": ci,
+            "media": media,
+            "has_proof": bool(media),
+            "has_video": any(m["kind"] == "video" for m in media),
+        }
+
+    def _is_excluded_repo(self, repo: str) -> bool:
+        low = repo.lower()
+        short = low.split("/", 1)[-1]
+        return any(fnmatch.fnmatch(low, pat) or fnmatch.fnmatch(short, pat) for pat in self.exclude_repos)
+
+    def refresh(self) -> None:
+        if not self.owners:
+            return
+        now = int(time.time())
+        token = self.get_token()
+        if not token:
+            err = "GitHub token unavailable (check `gh auth status` or `token_env`)"
+            self.summary = {"open": 0, "repos": 0, "with_proof": 0, "failing": 0, "merge_ready": 0, "updated": now, "error": err}
+            self.body = json.dumps({"configured": True, "ok": False, "error": err, "updated": now,
+                                    "owners": self.owners, "total": 0, "repos": [], "prs": []}).encode()
+            return
+        per_owner = min(120, max(40, self.max_prs))
+        seen: dict[str, dict] = {}
+        errors = []
+        for owner in self.owners:
+            try:
+                nodes = self._query_owner(owner, per_owner, token)
+                self._owner_cache[owner] = [
+                    self.normalize_pr(node) for node in nodes
+                    if not self._is_excluded_repo(node["repository"]["nameWithOwner"])
+                ]
+            except urllib.error.HTTPError as err:
+                if err.code == 401:
+                    token = self.get_token(force=True)
+                errors.append(f"{owner}: HTTP {err.code}")
+                print(f"pr refresh {owner} failed: HTTP {err.code}", file=sys.stderr, flush=True)
+            except Exception as err:
+                errors.append(f"{owner}: {type(err).__name__}")
+                print(f"pr refresh {owner} failed: {err!r}", file=sys.stderr, flush=True)
+            for pr in self._owner_cache.get(owner, []):
+                seen[pr["id"]] = pr
+        prs = sorted(seen.values(), key=lambda p: (p.get("updated_at") or 0, p["number"]), reverse=True)[:self.max_prs]
+        by_repo: dict[str, dict] = {}
+        for pr in prs:
+            r = by_repo.setdefault(pr["repo"], {"name": pr["repo"], "count": 0, "with_proof": 0, "failing": 0, "merge_ready": 0})
+            r["count"] += 1
+            if pr["has_proof"]:
+                r["with_proof"] += 1
+            if pr["ci"]["state"] == "failing":
+                r["failing"] += 1
+            if pr["merge_ready"]:
+                r["merge_ready"] += 1
+        repos = sorted(by_repo.values(), key=lambda r: (-r["count"], r["name"].lower()))
+        err_msg = "; ".join(errors) if errors and not prs else None
+        self.summary = {
+            "open": len(prs),
+            "repos": len(repos),
+            "with_proof": sum(1 for p in prs if p["has_proof"]),
+            "failing": sum(1 for p in prs if p["ci"]["state"] == "failing"),
+            "merge_ready": sum(1 for p in prs if p["merge_ready"]),
+            "updated": now,
+            "error": err_msg,
+        }
+        self.body = json.dumps({
+            "configured": True,
+            "ok": err_msg is None,
+            "error": err_msg,
+            "updated": now,
+            "owners": self.owners,
+            "total": len(prs),
+            "repos": repos,
+            "prs": prs,
+        }).encode()
+
+    def loop(self) -> None:
+        while True:
+            try:
+                self.refresh()
+            except Exception as error:
+                print(f"pr refresh failed: {error!r}", file=sys.stderr, flush=True)
+            time.sleep(self.refresh_s)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # hub: every machine, served as one page
 
 
 class Hub:
     """The latest picture of every machine, refreshed in the background so a request never waits on SSH."""
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, prs: PullRequestPoller | None = None) -> None:
         self.machines = config.get("machines") or [{"name": socket.gethostname()}]
         self.machines_command = config.get("machines_command")
+        self.queue_client = QueueClient(config["queue"]) if isinstance(config.get("queue"), dict) else None
+        self.prs = prs
         self.listed_at = 0.0
         self.snaps: dict = {}
+        self.queue_snap: dict | None = None
         # Served until the first pass finishes (a second or two; SSH can take longer).
         self.body = json.dumps({"version": VERSION, "updated": int(time.time()), "running": 0, "starting": 0,
-                                "machines": [], "history": [], "recent": [], "samples": []}).encode()
+                                "machines": [], "history": [], "recent": [], "samples": [],
+                                "queue": None, "pr_summary": prs.summary if prs else None}).encode()
         try:
             self.samples = json.loads((STATE_DIR / "samples.json").read_text())[-SAMPLES_KEPT:]
         except (OSError, ValueError):
@@ -489,6 +1293,8 @@ class Hub:
         configured = self.machines
         threads = [threading.Thread(target=lambda m=m: self.snaps.__setitem__(m["name"], self.read(m)))
                    for m in configured]
+        if self.queue_client is not None:
+            threads.append(threading.Thread(target=lambda: setattr(self, "queue_snap", self.queue_client.fetch(now))))
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -537,6 +1343,8 @@ class Hub:
             "running": sum(1 for j in jobs if j.get("state", "running") == "running"),
             "starting": sum(1 for j in jobs if j.get("state") == "starting"),
             "machines": machines, "history": history, "recent": history[::-1][:12], "samples": self.samples,
+            "queue": self.queue_snap,
+            "pr_summary": self.prs.summary if self.prs else None,
         }).encode()
 
     def sample(self, now: float, machines: list) -> None:
@@ -590,10 +1398,12 @@ def page() -> bytes:
     return b"<p>lanes.html is missing: put it next to the lanes script or in ~/.local/share/lanes/</p>"
 
 
-def serve(source, host: str, port: int, names: list | None = None) -> None:
+def serve(source, host: str, port: int, names: list | None = None, prs_source=None, media_handler=None) -> None:
     # Answer only requests addressed to this server by a name it expects. A web page that points its own domain at
     # 127.0.0.1 (DNS rebinding) sends its domain as Host, and gets nothing.
     allowed = {f"{name}:{port}" for name in ["127.0.0.1", "localhost", "[::1]", host, *(names or [])]}
+    empty_prs = json.dumps({"configured": False, "ok": True, "error": None, "updated": 0, "owners": [], "total": 0,
+                            "repos": [], "prs": []}).encode()
 
     class Handler(BaseHTTPRequestHandler):
         def reply(self, code: int, body: bytes = b"", kind: str = "application/json", head: bool = False) -> None:
@@ -606,6 +1416,46 @@ def serve(source, host: str, port: int, names: list | None = None) -> None:
             if not head:
                 self.wfile.write(body)
 
+        def stream_media(self, query: dict, head: bool) -> None:
+            if media_handler is None:
+                self.reply(404, b"media proxy disabled", "text/plain", head)
+                return
+            result = media_handler(query, self.headers.get("Range"), head)
+            status, headers, stream = result
+            if stream is None:
+                body = headers.get("_body", b"") if isinstance(headers, dict) else b""
+                ct = headers.get("Content-Type", "text/plain") if isinstance(headers, dict) else "text/plain"
+                self.reply(status, body, ct, head)
+                return
+            try:
+                ct_raw = next((v for k, v in headers.items() if k.lower() == "content-type"), "application/octet-stream")
+                ct = sanitize_media_content_type(ct_raw)
+                self.send_response(status)
+                self.send_header("Content-Type", ct)
+                self.send_header("Cache-Control", "private, max-age=300")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Security-Policy", "sandbox")
+                for passthrough in ("Content-Length", "Content-Range", "Accept-Ranges"):
+                    val = next((v for k, v in headers.items() if k.lower() == passthrough.lower()), None)
+                    if val is not None:
+                        self.send_header(passthrough, val)
+                self.end_headers()
+                if not head:
+                    sent = 0
+                    while sent < MEDIA_MAX_BYTES:
+                        chunk = stream.read(min(MEDIA_CHUNK_BYTES, MEDIA_MAX_BYTES - sent))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        sent += len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
         def do_HEAD(self) -> None:
             self.do_GET(head=True)
 
@@ -613,11 +1463,16 @@ def serve(source, host: str, port: int, names: list | None = None) -> None:
             if self.headers.get("Host", "") not in allowed:
                 self.reply(403, b"unexpected Host header; add the name you use to `hosts` in hub.toml", "text/plain", head)
                 return
-            path = self.path.split("?")[0]
+            parsed = urllib.parse.urlsplit(self.path)
+            path = parsed.path
             if path == "/":
                 self.reply(200, page(), "text/html; charset=utf-8", head)
             elif path == "/status.json":
                 self.reply(200, source(), head=head)
+            elif path == "/prs.json":
+                self.reply(200, prs_source() if prs_source else empty_prs, head=head)
+            elif path == "/media":
+                self.stream_media(urllib.parse.parse_qs(parsed.query), head)
             else:
                 self.reply(404, head=head)
 
@@ -630,9 +1485,27 @@ def serve(source, host: str, port: int, names: list | None = None) -> None:
 
 def hub(path: str | None) -> None:
     config = read_toml(Path(path) if path else CONFIG_DIR / "hub.toml")
-    lanes = Hub(config)
+    pr_cfg = config.get("pull_requests") if isinstance(config.get("pull_requests"), dict) else {}
+    prs = PullRequestPoller(pr_cfg) if pr_cfg.get("owners") else None
+    lanes = Hub(config, prs=prs)
     threading.Thread(target=lanes.loop, daemon=True).start()
-    serve(lambda: lanes.body, config.get("listen", "127.0.0.1"), int(config.get("port", 8792)), config.get("hosts", []))
+    if prs is not None:
+        threading.Thread(target=prs.loop, daemon=True).start()
+
+    def media_handler(query: dict, range_header: str | None, head: bool):
+        if prs is None:
+            return 404, {"Content-Type": "text/plain"}, None
+        url = (query.get("url") or [""])[0]
+        return prs.open_media_upstream(url, range_header=range_header, head=head)
+
+    serve(
+        lambda: lanes.body,
+        config.get("listen", "127.0.0.1"),
+        int(config.get("port", 8792)),
+        config.get("hosts", []),
+        prs_source=(lambda: prs.body) if prs else None,
+        media_handler=media_handler if prs else None,
+    )
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -661,6 +1534,64 @@ def demo() -> None:
                 **({"gpu": round(40 + 50 * wave)} if k == 2 else {})}
     samples = [{"t": int(start - 7200 + i * 30), **{m: point(i, k) for k, m in enumerate(machines)}} for i in range(240)]
 
+    demo_prs = [
+        {
+            "id": "acme/web#412", "repo": "acme/web", "number": 412,
+            "title": "Streamline checkout address autocomplete and keyboard focus",
+            "url": "https://github.com/acme/web/pull/412", "author": "alex", "is_bot": False,
+            "is_draft": False, "is_release": False, "head_ref": "feat/address-focus", "base_ref": "main",
+            "created_at": int(start - 7200), "updated_at": int(start - 420),
+            "additions": 214, "deletions": 38, "changed_files": 5,
+            "files": [{"path": "src/checkout/AddressInput.tsx", "additions": 140, "deletions": 24},
+                      {"path": "src/checkout/AddressInput.test.tsx", "additions": 74, "deletions": 14}],
+            "summary": "Keeps keyboard focus on the suggestion list after selecting a street and removes the double blur jump.",
+            "why": "Users on Safari lost focus mid-checkout when picking an autocomplete match.",
+            "review_decision": "APPROVED", "mergeable": "MERGEABLE", "merge_ready": True,
+            "ci": {"state": "passing", "passed": 6, "running": 0, "failed": 0, "pending": 0, "total": 6,
+                   "checks": [{"name": "ci-ok", "state": "passing", "url": None}, {"name": "e2e", "state": "passing", "url": None}]},
+            "media": [{"kind": "image", "label": "Before / after focus trace", "src": "/media?demo=checkout", "original_url": "", "source": "body"}],
+            "has_proof": True, "has_video": False,
+        },
+        {
+            "id": "acme/api#198", "repo": "acme/api", "number": 198,
+            "title": "Release train 204: batch invoice webhooks with idempotency keys",
+            "url": "https://github.com/acme/api/pull/198", "author": "maya", "is_bot": False,
+            "is_draft": False, "is_release": True, "head_ref": "merge-train/204", "base_ref": "main",
+            "created_at": int(start - 3600), "updated_at": int(start - 120),
+            "additions": 642, "deletions": 89, "changed_files": 11,
+            "files": [{"path": "api/webhooks/invoice.py", "additions": 310, "deletions": 45},
+                      {"path": "migrations/20261125_idempotency.sql", "additions": 42, "deletions": 0}],
+            "summary": "Deduplicates retried webhook deliveries using a unique request key and emits structured audit metrics.",
+            "why": "", "review_decision": "REVIEW_REQUIRED", "mergeable": "MERGEABLE", "merge_ready": False,
+            "ci": {"state": "running", "passed": 4, "running": 2, "failed": 0, "pending": 1, "total": 7,
+                   "checks": [{"name": "integration", "state": "running", "url": None}, {"name": "lint", "state": "passing", "url": None}]},
+            "media": [], "has_proof": False, "has_video": False,
+        },
+        {
+            "id": "acme/mobile#87", "repo": "acme/mobile", "number": 87,
+            "title": "Fix push audio fade-out on background transition",
+            "url": "https://github.com/acme/mobile/pull/87", "author": "alex", "is_bot": False,
+            "is_draft": False, "is_release": False, "head_ref": "fix/audio-fade", "base_ref": "main",
+            "created_at": int(start - 18000), "updated_at": int(start - 900),
+            "additions": 58, "deletions": 11, "changed_files": 2,
+            "files": [{"path": "ios/AudioSessionManager.swift", "additions": 58, "deletions": 11}],
+            "summary": "Releases the ducking session cleanly when the app returns to the foreground.",
+            "why": "", "review_decision": "CHANGES_REQUESTED", "mergeable": "MERGEABLE", "merge_ready": False,
+            "ci": {"state": "failing", "passed": 3, "running": 0, "failed": 1, "pending": 0, "total": 4,
+                   "checks": [{"name": "ios-sim-test", "state": "failing", "url": None}, {"name": "swiftlint", "state": "passing", "url": None}]},
+            "media": [], "has_proof": False, "has_video": False,
+        },
+    ]
+
+    def prs_body() -> bytes:
+        repos_meta = [
+            {"name": "acme/web", "count": 1, "with_proof": 1, "failing": 0, "merge_ready": 1},
+            {"name": "acme/api", "count": 1, "with_proof": 0, "failing": 0, "merge_ready": 0},
+            {"name": "acme/mobile", "count": 1, "with_proof": 0, "failing": 1, "merge_ready": 0},
+        ]
+        return json.dumps({"configured": True, "ok": True, "error": None, "updated": int(time.time()),
+                           "owners": ["acme"], "total": len(demo_prs), "repos": repos_meta, "prs": demo_prs}).encode()
+
     def body() -> bytes:
         now = time.time()
         done = [h for h in history if h["finished"] <= now]
@@ -677,10 +1608,71 @@ def demo() -> None:
             if ms[-1]["cpuTemp"] >= CPU_HOT_C:
                 ms[-1]["hot"] = f"CPU {ms[-1]['cpuTemp']}°C"
         ms.append({"name": "cloud", "ok": True, "virtual": True, "meter": {"label": "minutes left this month", "value": 1840, "max": 3000}, "jobs": []})
+        queue = {
+            "ok": True, "error": None, "updated": int(now),
+            "workers": [
+                {"worker_id": "build-01", "online": True, "age_s": 4, "lanes": ["fast", "vm"], "free_cpus": 12, "max_cpus": 16,
+                 "free_mem_gib": 21.5, "free_disk_gib": 310.0, "load_1m": 3.4, "max_load": 16, "temp_c": 61.0, "max_temp_c": 90,
+                 "draining": False, "paused_reason": "", "running_jobs": len(ms[0]["jobs"]), "max_concurrent": 0, "primary_local": True,
+                 "boat_day_left": None, "boat_hour_left": None},
+                {"worker_id": "build-02", "online": True, "age_s": 6, "lanes": ["vm"], "free_cpus": 4, "max_cpus": 16,
+                 "free_mem_gib": 9.8, "free_disk_gib": 188.0, "load_1m": 6.1, "max_load": 16, "temp_c": 92.0, "max_temp_c": 90,
+                 "draining": False, "paused_reason": "paused: CPU 92°C >= 90°C", "running_jobs": len(ms[1]["jobs"]), "max_concurrent": 0,
+                 "primary_local": False, "boat_day_left": None, "boat_hour_left": None},
+                {"worker_id": "cloud", "online": True, "age_s": 8, "lanes": ["vm"], "free_cpus": 192, "max_cpus": 192,
+                 "free_mem_gib": 999, "free_disk_gib": 999, "load_1m": 0, "max_load": 0, "temp_c": None, "max_temp_c": None,
+                 "draining": False, "paused_reason": "", "running_jobs": 0, "max_concurrent": 24, "primary_local": False,
+                 "boat_day_left": 140, "boat_hour_left": 56},
+            ],
+            "running": [{"job_id": 100 + i, "repo": h["repo"], "run_id": 500 + i, "job_name": h["job"], "head_branch": "main",
+                         "is_release": False, "state": "RUNNING", "claimed_by": h["machine"],
+                         "claimed_lane": "fast" if h["job"] == "lint" else "vm", "size_name": "fast" if h["job"] == "lint" else "c4m4u4",
+                         "queued_at": h["started"] - 2, "started_at": h["started"], "waited_s": 2, "wait_reason": "", "attempt": 1, "url": None}
+                        for i, h in enumerate(live)],
+            "queued": [
+                {"job_id": 901, "repo": "acme/api", "run_id": 601, "job_name": "integration", "head_branch": "merge-train/204",
+                 "is_release": True, "state": "QUEUED", "claimed_by": None, "claimed_lane": None, "size_name": None,
+                 "queued_at": int(now - 24), "waited_s": 24, "wait_reason": "release job at front of queue — next free slot on build-01",
+                 "attempt": 1, "url": None},
+                {"job_id": 902, "repo": "acme/web", "run_id": 602, "job_name": "e2e", "head_branch": "feat/address-focus",
+                 "is_release": False, "state": "QUEUED", "claimed_by": None, "claimed_lane": None, "size_name": None,
+                 "queued_at": int(now - 52), "waited_s": 52, "wait_reason": "waiting on build-01 (build-02 paused at 92°C)",
+                 "attempt": 1, "url": None},
+            ],
+            "recent": [],
+            "counts": {"QUEUED": 2, "CLAIMED": 0, "PROVISIONING": 0, "RUNNING": len(live), "TEARING_DOWN": 0,
+                       "DONE": len(done), "FAILED": sum(1 for d in done if d["result"] == "failure"), "CANCELLED": 0, "LOST": 0},
+            "state_machine": DEFAULT_STATE_MACHINE,
+        }
+        pr_summary = {"open": 3, "repos": 3, "with_proof": 1, "failing": 1, "merge_ready": 1, "updated": int(now), "error": None}
         return json.dumps({"version": VERSION, "updated": int(now), "running": sum(len(m["jobs"]) for m in ms), "starting": 0,
-                           "machines": ms, "history": done, "recent": done[::-1][:12], "samples": samples}).encode()
+                           "machines": ms, "history": done, "recent": done[::-1][:12], "samples": samples,
+                           "queue": queue, "pr_summary": pr_summary}).encode()
 
-    serve(body, "127.0.0.1", int(os.environ.get("LANES_PORT", "8792")))
+    def demo_media(query: dict, range_header: str | None, head: bool):
+        import io, struct, zlib
+        # Tiny 160x90 solid dark-slate PNG with a bright green check bar so `lanes demo` shows a real image.
+        w, h = 160, 90
+        rows = []
+        for y in range(h):
+            row = bytearray([0])
+            for x in range(w):
+                if 36 <= y <= 54 and 24 <= x <= 136:
+                    row.extend((63, 207, 142))
+                elif 12 <= y <= 22 and 24 <= x <= 96:
+                    row.extend((90, 156, 255))
+                else:
+                    row.extend((28, 30, 38))
+            rows.append(bytes(row))
+        def chunk(tag: bytes, payload: bytes) -> bytes:
+            return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        png = (b"\x89PNG\r\n\x1a\n"
+               + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+               + chunk(b"IDAT", zlib.compress(b"".join(rows)))
+               + chunk(b"IEND", b""))
+        return 200, {"Content-Type": "image/png", "Content-Length": str(len(png))}, io.BytesIO(png)
+
+    serve(body, "127.0.0.1", int(os.environ.get("LANES_PORT", "8792")), prs_source=prs_body, media_handler=demo_media)
 
 
 if __name__ == "__main__":

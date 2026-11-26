@@ -19,3 +19,18 @@ ssh = "build-02"                         # anything `ssh HOST` accepts: a host, 
 # through the shell every minute and expects {"machines": [{"name": …, "ssh": …}, …]} (same fields as above). While
 # it fails or lists nothing, the last list stays, starting with the [[machines]] above.
 # machines_command = "~/bin/list-ci-machines"
+
+# Optional: global CI queue service exposing read-only `/status` and `/state-machine`.
+# The hub reads the token server-side so it never reaches the browser.
+# [queue]
+# url = "https://queue.example.com"
+# token_env_file = "~/.config/ci/wake.env"   # reads CI_WAKE_TOKEN (and CI_WAKE_URL if `url` is omitted)
+# token_env = "CI_WAKE_TOKEN"
+
+# Optional: open pull requests across one or more GitHub users or orgs, with inline proof videos and screenshots.
+# [pull_requests]
+# owners = ["your-user", "your-org"]
+# exclude_repos = ["*/archive-*", "*-benchmark"]
+# refresh_s = 45
+# max_prs = 100
+# token_command = "gh auth token"            # or set GITHUB_TOKEN in the hub's environment

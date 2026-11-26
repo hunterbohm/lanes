@@ -1,6 +1,8 @@
 <!doctype html>
-<!-- Lanes: the charts page. `lanes hub` serves it at / and its data at /status.json. The Lanes menu bar app shows it
-     (?in=menubar). It also works in any browser tab, or in an iframe inside another app (?in=embed). -->
+<!-- Lanes: the page. `lanes hub` serves it at / with its data at /status.json and /prs.json. In a browser tab it is
+     the dashboard: pull requests with their proof, live CI and the queue, and how CI works. The Lanes menu bar app
+     (?in=menubar) and an iframe inside another app (?in=embed) get the compact panel instead: is CI alive, what is
+     running, what just finished. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -10,9 +12,12 @@
   :root {
     color-scheme: light;
     --surface: #fcfcfb;
+    --plane: #f4f3f0;
+    --well: #eeede9;
+    --line: #dcdbd5;
     --ink: #0b0b0b;
     --ink-2: #52514e;
-    --ink-3: #8a8984;
+    --ink-3: #777670;
     --grid: #e6e5e1;
     --track: #ecebe7;
     --hover: rgba(0, 0, 0, .04);
@@ -22,6 +27,14 @@
     --bad: #d03b3b;
     --warn: #fab219;
     --gone: #b9b8b2;
+    --info: #2a78d6;
+    --bad-ink: #b3261e;
+    --warn-ink: #8a5700;
+    --info-ink: #1f5fae;
+    --add: #006300;
+    --del: #b3261e;
+    --stage: #0d0d0c;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -30,6 +43,9 @@
       --grid: #2f2f2d; --track: #2a2a28; --hover: rgba(255, 255, 255, .05); --gone: #55544f;
       --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500;
       --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #e66767;
+      --plane: #111110; --well: #232322; --line: #353533;
+      --info: #3987e5; --bad-ink: #e66767; --warn-ink: #fab219; --info-ink: #6ea8ee; --add: #0ca30c; --del: #e66767;
+      --stage: #080808;
     }
   }
   :root[data-theme="dark"] {
@@ -38,24 +54,18 @@
     --grid: #2f2f2d; --track: #2a2a28; --hover: rgba(255, 255, 255, .05); --gone: #55544f;
     --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500;
     --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #e66767;
+    --plane: #111110; --well: #232322; --line: #353533;
+    --info: #3987e5; --bad-ink: #e66767; --warn-ink: #fab219; --info-ink: #6ea8ee; --add: #0ca30c; --del: #e66767;
+    --stage: #080808;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; background: transparent; color: var(--ink); }
-  html.standalone body { background: var(--surface); min-height: 100vh; }
-  html.standalone #app { max-width: 560px; margin: 0 auto; }
   html.menubar body { background: color-mix(in srgb, var(--surface) 86%, transparent); min-height: 100vh; }
-  body { font: 12px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
-         padding: 16px 18px 18px; -webkit-font-smoothing: antialiased; cursor: default; user-select: none; }
+  body { font: 12px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif; font-variant-numeric: tabular-nums;
+         padding: 16px; -webkit-font-smoothing: antialiased; cursor: default; user-select: none; }
   a { color: inherit; text-decoration: none; }
-  section { margin-top: 20px; }
-  h2 { margin: 0 0 9px; font-size: 11px; font-weight: 600; color: var(--ink-2); display: flex; align-items: baseline; gap: 8px; }
-  h2 .aside { font-weight: 400; color: var(--ink-3); margin-left: auto; }
-  .head { display: flex; align-items: flex-end; gap: 10px; }
-  .hero { font-size: 46px; font-weight: 600; line-height: .9; letter-spacing: -0.03em; }
-  .hero-label { color: var(--ink-2); padding-bottom: 3px; line-height: 1.3; }
-  .hero-label b { color: var(--ink); font-weight: 600; }
-  .legend { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 10px; color: var(--ink-2);
-            padding-bottom: 3px; font-size: 11px; max-width: 60%; }
+  .legend { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 10px; color: var(--ink-2); font-size: 11px; }
   .key { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
   .fresh { color: var(--ink-3); font-size: 11px; margin-top: 6px; font-variant-numeric: tabular-nums; }
@@ -63,8 +73,6 @@
   svg { display: block; overflow: visible; max-width: 100%; height: auto; }
   svg text { fill: var(--ink-3); font-size: 10px; font-variant-numeric: tabular-nums; }
   .mcard { padding: 12px 0; position: relative; }
-  .mcard + .mcard::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 1px; background: var(--grid); }
-  .mcard:first-child { padding-top: 2px; }
   .mhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
   .mname { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; white-space: nowrap; }
   .chip { font-size: 11px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -93,25 +101,10 @@
   .procs .pv { text-align: right; color: var(--ink-2); }
   .procs .meter { height: 6px; }
   .vrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; align-items: center; margin-top: 7px; }
-  .heat { margin-top: 10px; padding: 7px 10px; border-radius: 8px; font-size: 11.5px; line-height: 1.5; color: var(--ink);
-          background: color-mix(in srgb, var(--bad) 12%, transparent); border-left: 3px solid var(--bad); }
-  .heat b { color: var(--bad); }
   .slots { display: flex; gap: 2px; height: 8px; }
   .slots i { flex: 1; border-radius: 2px; background: var(--track); }
   .meter { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
   .meter i { display: block; height: 100%; border-radius: 4px; }
-  .run { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; column-gap: 9px; row-gap: 4px; align-items: center;
-         padding: 6px 6px; margin: 0 -6px; border-radius: 6px; }
-  .run { position: relative; }
-  .run + .run::before { content: ''; position: absolute; left: 6px; right: 6px; top: 0; height: 1px; background: var(--grid); }
-  .run[href]:hover::before, .run[href]:hover + .run::before { background: transparent; }
-  .run[href]:hover { background: var(--hover); }
-  .run .what { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .run .what b { font-weight: 600; }
-  .run .what span { color: var(--ink-2); }
-  .run .when { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 11px; }
-  .run .bar { grid-column: 2 / 4; height: 3px; border-radius: 2px; background: var(--track); overflow: hidden; }
-  .run .bar i { display: block; height: 100%; border-radius: 2px; transition: width .6s ease; }
   .empty { color: var(--ink-3); padding: 4px 0; }
   .tally { display: flex; gap: 12px; color: var(--ink-2); font-size: 11px; margin-bottom: 9px; font-variant-numeric: tabular-nums; }
   .tally b { color: var(--ink); font-weight: 600; }
@@ -127,20 +120,57 @@
   .problem b { display: block; color: var(--ink); font-size: 13px; margin-bottom: 4px; }
   @keyframes breathe { 0%, 100% { opacity: .3; } 50% { opacity: .85; } }
   .live { animation: breathe 2.4s ease-in-out infinite; }
-  @media (prefers-reduced-motion: reduce) { .live { animation: none; } .run .bar i { transition: none; } }
-  /* ---- compact layout: the menu bar panel and the T3 card */
-  .c-head { display: flex; align-items: flex-start; gap: 10px; }
-  .c-title { font-size: 13px; font-weight: 600; line-height: 1.35; }
-  .c-title.bad { color: var(--bad); }
-  .c-sub { color: var(--ink-3); font-size: 11px; margin-top: 1px; font-variant-numeric: tabular-nums; }
-  .c-sub.bad { color: var(--bad); font-weight: 600; }
+  .ic { display: inline-block; flex: none; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .bad-t { color: var(--bad-ink); font-weight: 600; }
+
+  /* ---- the signal lamp: green and pulsing while fresh data arrives, amber when something needs a look, red when
+     the hub has gone quiet */
+  .lamp { position: relative; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+  .lamp.warn { background: var(--warn); }
+  .lamp.bad { background: var(--bad); }
+  .lamp.on::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: inherit; animation: ping 2.4s cubic-bezier(0, 0, .2, 1) infinite; }
+  @keyframes ping { from { transform: scale(1); opacity: .5; } 70%, to { transform: scale(2.8); opacity: 0; } }
+  html.stale .lamp { background: var(--bad); }
+  html.stale .lamp::after { display: none; }
+
+  /* ---- one job, one row: a mark, what it is, where it ran, when */
+  .jl { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; column-gap: 8px; align-items: center; min-height: 26px; padding: 3px 8px; margin: 0 -8px; border-radius: 6px; }
+  a.jl:hover { background: var(--hover); }
+  .jl .lead { justify-self: center; }
+  .lead.dot, .lead.ring { width: 8px; height: 8px; border-radius: 50%; }
+  .lead.ring { border: 1.5px solid var(--ink-3); }
+  .lead.ic { stroke-width: 2; }
+  .lead.ok { color: var(--good); }
+  .lead.no { color: var(--bad); }
+  .lead.na { color: var(--ink-3); }
+  .jl .what { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .jl .what b { font-weight: 600; }
+  .jl .what span { color: var(--ink-2); }
+  .jl .what .rel { margin-left: 2px; font-size: .9em; font-weight: 500; color: var(--info-ink); }
+  .jl .spot, .jl .when, .jl .sub { font-size: 11px; }
+  .jl .spot { max-width: 170px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ink-3); }
+  .jl .when { min-width: 44px; text-align: right; white-space: nowrap; color: var(--ink-2); }
+  .jl .sub { grid-column: 2 / -1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ink-3); }
+  .jl .sub.full { white-space: normal; overflow-wrap: anywhere; }
+  .jl .bar { grid-column: 2 / -1; height: 3px; margin: 1px 0 2px; border-radius: 2px; background: var(--track); overflow: hidden; }
+  .jl .bar i { display: block; height: 100%; border-radius: 2px; }
+
+  /* ---- compact layout: the menu bar panel and a card inside another app */
+  .c-head { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 8px; align-items: start; }
+  .c-head .lamp { margin: 5px 4px 0; }
+  .c-title { font-size: 14px; font-weight: 600; line-height: 18px; }
+  .c-sub, .c-alert { margin-top: 2px; font-size: 11.5px; line-height: 16px; color: var(--ink-2); overflow-wrap: anywhere; }
+  .c-sub b { font-weight: 600; color: var(--ink); }
+  .c-alert { display: flex; gap: 6px; color: var(--ink); }
+  .c-alert::before { content: '▲'; flex: none; font-size: 9px; color: var(--warn-ink); }
+  .c-head .fresh { margin: 2px 0 0; white-space: nowrap; }
+  .c-label { display: flex; align-items: baseline; gap: 8px; margin: 16px 0 4px; font-size: 11px; font-weight: 600; color: var(--ink-2); }
+  .c-label span + span { margin-left: auto; font-weight: 400; color: var(--ink-3); }
+  .c-more { display: block; padding: 2px 0 0 24px; font-size: 11px; color: var(--ink-3); }
+  .c-more:hover { color: var(--ink); }
+  .c-machines { margin-top: 16px; }
   .mt.trouble .mt-row { background: color-mix(in srgb, var(--bad) 9%, transparent); }
   .mt.trouble .mt-row:hover { background: color-mix(in srgb, var(--bad) 14%, transparent); }
-  .run.fail { grid-template-columns: 8px minmax(0, 1fr) auto; }
-  .run.fail .bad-i { font-size: 11px; font-weight: 700; }
-  .c-head .fresh { margin: 2px 0 0 auto; white-space: nowrap; }
-  .c-label { font-size: 11px; font-weight: 600; color: var(--ink-2); margin: 16px 0 4px; display: flex; gap: 8px; }
-  .c-label span:last-child { margin-left: auto; font-weight: 400; }
   .mt, .mt-cols { margin: 0 -8px; }
   .mt-cols, .mt-row { display: grid; grid-template-columns: minmax(0, 1fr) repeat(4, 54px) 12px; column-gap: 10px; align-items: center; padding: 0 8px; }
   .mt-cols { font-size: 10px; color: var(--ink-3); padding-bottom: 2px; }
@@ -165,15 +195,422 @@
   .multi .lab b { color: var(--ink-2); font-weight: 600; }
   .multi svg { width: 100%; height: 28px; margin-top: 2px; }
   .mt + .mt { border-top: 1px solid var(--grid); }
-  .ci-line { display: flex; gap: 12px; color: var(--ink-2); font-size: 11.5px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
-  .ci-line b { color: var(--ink); font-weight: 600; }
-  .vrow + .meter, .ci-line + .vrow { margin-top: 8px; }
-  .c-head ~ .meter { height: 6px; }
-  .foot { display: flex; justify-content: space-between; margin-top: 14px; padding-top: 9px; border-top: 1px solid var(--grid); font-size: 11.5px; }
-  .foot a { color: var(--c1); }
-  .foot a:hover { text-decoration: underline; }
-  .foot span { color: var(--ink-3); }
-  @media (prefers-reduced-motion: reduce) { .chev { transition: none; } }
+  .mt-cols span:first-child { text-align: left; font-size: 11px; font-weight: 600; color: var(--ink-2); }
+  .c-meter { margin-top: 4px; }
+  .c-meter .meter { height: 3px; margin-top: 6px; }
+  .foot { display: flex; align-items: center; gap: 16px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--grid); font-size: 11.5px; color: var(--ink-3); }
+  .foot a { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-2); white-space: nowrap; }
+  .foot a:hover { color: var(--ink); }
+  .foot .ic { width: 12px; height: 12px; }
+  .foot > span { margin-left: auto; white-space: nowrap; }
+
+  /* ---- the dashboard: the page in a browser tab */
+  html.standalone { scrollbar-gutter: stable; }
+  html.standalone body { background: var(--plane); min-height: 100vh; padding: 0; font-size: 14px; line-height: 1.5; cursor: auto; user-select: text; }
+  html.standalone :where(button, a, input, select):focus-visible { outline: 2px solid var(--c1); outline-offset: 2px; }
+  html.standalone :where(.tab, .vtab, .repo):focus-visible { outline-offset: -2px; }
+  :where(html.standalone) :where(h1, h2, h3, h4, h5, p, ul, ol, dl, dd, figure) { margin: 0; padding: 0; }
+  :where(html.standalone) :where(ul, ol) { list-style: none; }
+  html.standalone code { font: 0.9em var(--mono); background: var(--well); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+  .wrap { max-width: 1128px; margin: 0 auto; padding: 0 24px; }
+  .top { position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--line);
+         background: color-mix(in srgb, var(--plane) 88%, transparent); -webkit-backdrop-filter: saturate(1.4) blur(12px); backdrop-filter: saturate(1.4) blur(12px); }
+  .top-row { display: flex; align-items: center; column-gap: 28px; min-height: 52px; }
+  .brand { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; white-space: nowrap; }
+  .glyph { display: grid; place-items: center; width: 18px; height: 18px; }
+  .tabs { display: flex; align-self: stretch; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; border: 0; background: none;
+         font: inherit; font-size: 13.5px; font-weight: 500; color: var(--ink-2); white-space: nowrap; cursor: pointer; }
+  .tab:hover { color: var(--ink); }
+  .tab .n { font-size: 12.5px; font-weight: 400; color: var(--ink-3); }
+  .tab[aria-selected="true"] { color: var(--ink); }
+  .tab[aria-selected="true"]::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--ink); }
+  .livebox { display: flex; align-items: center; gap: 8px; margin-left: auto; font-size: 12.5px; white-space: nowrap; }
+  .live-btn { display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border: 0; border-radius: 7px; background: none;
+              font: inherit; font-weight: 500; color: var(--ink); cursor: pointer; }
+  .live-btn:hover { background: var(--hover); }
+  .livebox .fresh { margin: 0; font-size: 12.5px; }
+  .view { padding: 28px 0 80px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; min-width: 0; }
+  .stack { display: grid; gap: 12px; align-content: start; }
+  .stack > * { min-width: 0; }
+  .blk-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin-bottom: 8px; }
+  .blk-h h2 { font-size: 15px; font-weight: 600; }
+  .blk-h > span { margin-left: auto; font-size: 12.5px; color: var(--ink-3); }
+  .note { font-size: 13px; color: var(--ink-2); }
+  .note.warn { padding: 8px 12px; border-radius: 8px; color: var(--ink); border: 1px solid color-mix(in srgb, var(--warn) 60%, var(--line));
+               background: color-mix(in srgb, var(--warn) 12%, var(--surface)); }
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px;
+         background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+  .btn:hover { border-color: var(--ink-3); }
+  .iconbtn { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: none; color: var(--ink-2); cursor: pointer; }
+  .iconbtn:hover { background: var(--hover); color: var(--ink); }
+  .iconbtn.busy .ic { animation: turn .8s linear infinite; }
+  @keyframes turn { to { transform: rotate(360deg); } }
+  .linkish { padding: 0; border: 0; background: none; font: inherit; color: var(--ink); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+  .more { display: block; width: 100%; padding: 10px; border: 0; border-top: 1px solid var(--line); background: none; color: var(--ink-2);
+          font: inherit; font-size: 12.5px; text-align: center; cursor: pointer; }
+  .more:hover { color: var(--ink); }
+  .sheet > .more { border-radius: 0 0 11px 11px; }
+  .card > .more { margin: 8px 0 -8px; padding-bottom: 8px; }
+  html.standalone .jl { min-height: 32px; padding: 4px 8px; font-size: 13.5px; }
+  html.standalone .jl .spot, html.standalone .jl .when, html.standalone .jl .sub { font-size: 12.5px; }
+  html.standalone .jl .spot { max-width: 260px; }
+  html.standalone .jl .when { min-width: 60px; }
+  html.standalone .empty { padding: 6px 0; font-size: 13px; color: var(--ink-2); }
+
+  /* pull requests: a rail of repositories, one row of views, then the reel */
+  .pr-top { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 4px 24px; }
+  .pr-top h1 { font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: -0.02em; }
+  .pr-say { margin-top: 4px; font-size: 13.5px; color: var(--ink-2); text-wrap: pretty; }
+  .pr-say b { font-weight: 600; color: var(--ink); }
+  .pr-stamp { display: flex; align-items: center; gap: 4px; margin-left: auto; font-size: 12.5px; color: var(--ink-3); white-space: nowrap; }
+  .pr-stamp .bad { color: var(--bad-ink); }
+  .pr-note { margin-top: 12px; }
+  .pr-grid { display: grid; grid-template-columns: 220px minmax(0, 820px); gap: 40px; align-items: start; margin-top: 24px; }
+  .rail { position: sticky; top: 76px; max-height: calc(100vh - 96px); overflow-y: auto; scrollbar-width: thin; }
+  .rail h2 { margin-bottom: 8px; padding: 0 8px; font-size: 12.5px; font-weight: 500; line-height: 20px; color: var(--ink-3); }
+  .rail ul { display: grid; gap: 2px; }
+  .repo { display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 8px; border: 0; border-radius: 6px; background: none;
+          font: inherit; font-size: 13.5px; color: var(--ink-2); text-align: left; cursor: pointer; }
+  .repo:hover { background: var(--hover); color: var(--ink); }
+  .repo[aria-pressed="true"] { background: var(--well); color: var(--ink); font-weight: 600; }
+  .repo .nm { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .repo .ct { min-width: 20px; text-align: right; font-size: 12.5px; font-weight: 400; color: var(--ink-3); }
+  .mk { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--bad); }
+  .mk.vid { height: 8px; border-radius: 0; background: var(--ink-3); clip-path: polygon(0 0, 100% 50%, 0 100%); }
+  .mk.pic { border: 1.5px solid var(--ink-3); border-radius: 2px; background: none; }
+  .mk.off { visibility: hidden; }
+  .rail > .tick { margin-top: 12px; padding: 12px 8px 4px; border-top: 1px solid var(--line); }
+  .tick { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); white-space: nowrap; cursor: pointer; }
+  .tick input { width: 14px; height: 14px; margin: 0; accent-color: var(--ink); }
+  .tick span { margin-left: auto; font-size: 12.5px; color: var(--ink-3); }
+  .rail-m { display: none; }
+  .pr-bar { display: flex; align-items: center; gap: 8px 12px; margin-bottom: 16px; }
+  .vtabs { display: flex; gap: 2px; min-width: 0; padding: 1px; overflow-x: auto; scrollbar-width: none; }
+  .vtabs::-webkit-scrollbar { display: none; }
+  .vtab { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 0; border-radius: 7px; background: none;
+          font: inherit; font-size: 13.5px; color: var(--ink-2); white-space: nowrap; cursor: pointer; }
+  .vtab .n { font-size: 12.5px; font-weight: 400; color: var(--ink-3); }
+  .vtab:hover { color: var(--ink); }
+  .vtab[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 0 0 1px var(--line); }
+  .search { position: relative; flex: 0 1 220px; min-width: 120px; margin-left: auto; }
+  .search .ic { position: absolute; left: 9px; top: 8px; color: var(--ink-3); pointer-events: none; }
+  .search input { width: 100%; height: 30px; padding: 0 8px 0 30px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink);
+                  font: inherit; font-size: 13.5px; -webkit-appearance: none; appearance: none; }
+  .search input::placeholder { color: var(--ink-3); }
+  .modes { display: inline-flex; flex: none; padding: 1px; border-radius: 8px; background: var(--well); }
+  .modes button { display: grid; place-items: center; width: 30px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: none; color: var(--ink-3); cursor: pointer; }
+  .modes button:hover { color: var(--ink); }
+  .modes button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
+  .pr-match { display: flex; gap: 12px; margin: -4px 0 12px; font-size: 12.5px; color: var(--ink-2); }
+  .grp + .grp { margin-top: 28px; }
+  .grp-h { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 0 4px 8px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .grp-h b { font-size: 14px; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .grp-h span { font-size: 12.5px; color: var(--ink-3); white-space: nowrap; }
+  .grp-h .ic { align-self: center; width: 12px; height: 12px; color: var(--ink-3); transition: transform .15s; }
+  .grp-h[aria-expanded="true"] .ic { transform: rotate(90deg); }
+  .sheet { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  .pr { padding: 16px 20px; }
+  .pr + .pr { border-top: 1px solid var(--line); }
+  .pr-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 12px; font-size: 12.5px; line-height: 20px; color: var(--ink-3); }
+  .st { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; color: var(--ink); }
+  .st i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
+  .st.good i { background: var(--good); }
+  .st.bad i { background: var(--bad); }
+  .st.info i { background: var(--info); }
+  .st.warn i { background: var(--warn); }
+  .st.none i { background: none; border: 1.5px solid var(--ink-3); }
+  .pr-repo { display: none; }
+  .mixed .pr-repo { display: inline; }
+  .pr-title { display: block; margin-top: 2px; font-size: 16px; line-height: 22px; font-weight: 600; text-wrap: pretty; overflow-wrap: anywhere; }
+  a.pr-title:hover { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  .pr-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 4px; font-size: 13.5px; line-height: 20px;
+             color: var(--ink-2); overflow-wrap: anywhere; }
+  .pr-text.three { -webkit-line-clamp: 3; }
+  .pr-text span { color: var(--ink-3); }
+  .proof { display: grid; gap: 8px; margin-top: 12px; }
+  .proof + .pr-text { margin-top: 12px; }
+  .reel { display: grid; gap: 8px; }
+  .reel.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .reel.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .frame { position: relative; display: block; width: 100%; aspect-ratio: 16 / 9; padding: 0; border: 0; border-radius: 8px; background: var(--stage); color: inherit; font: inherit; overflow: hidden; }
+  .frame::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); pointer-events: none; }
+  .frame video, .frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
+  button.frame { cursor: zoom-in; }
+  .vmsg { position: absolute; inset: 0; display: none; place-items: center; padding: 16px; text-align: center; font-size: 12.5px; color: #c3c2b7; }
+  .frame.broken { cursor: default; }
+  .frame.broken video, .frame.broken img { visibility: hidden; }
+  .frame.broken .vmsg { display: grid; }
+  .cap { display: flex; align-items: baseline; gap: 12px; min-width: 0; margin-top: 6px; font-size: 12.5px; color: var(--ink-2); }
+  .cap span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .cap a { flex: none; margin-left: auto; color: var(--ink-3); }
+  .cap a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+  .pr-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 20px; margin-top: 10px; font-size: 12.5px; line-height: 20px; color: var(--ink-2); }
+  .disc { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; font: inherit; color: inherit; white-space: nowrap; }
+  button.disc { cursor: pointer; }
+  button.disc:hover { color: var(--ink); }
+  .disc .ic { width: 12px; height: 12px; color: var(--ink-3); transition: transform .15s; }
+  .disc[aria-expanded="true"] .ic { transform: rotate(90deg); }
+  .add, .del { font: 600 12px var(--mono); }
+  .add { color: var(--add); }
+  .del { color: var(--del); }
+  .cibar { display: flex; gap: 1px; width: 56px; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+  .cibar i { flex: 0 1 0; min-width: 2px; background: var(--good); }
+  .cibar i.fail { background: var(--bad); }
+  .cibar i.run { background: var(--info); }
+  .cibar i.todo { background: var(--gone); }
+  .pr-open { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; color: var(--ink-3); white-space: nowrap; }
+  .pr-open:hover { color: var(--ink); }
+  .pr-open .ic { width: 12px; height: 12px; }
+  .pr-more { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--grid); font-size: 12.5px; }
+  .flist li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; padding: 2px 0; }
+  .flist .path { font: 12px/1.5 var(--mono); color: var(--ink-2); overflow-wrap: anywhere; }
+  .rest { color: var(--ink-3); }
+  .clist li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 2px 0; }
+  .clist li > :nth-child(2) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .clist a:hover { text-decoration: underline; text-underline-offset: 2px; }
+  .clist em { font-style: normal; color: var(--ink-3); }
+  .sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+  .sdot.failing { background: var(--bad); }
+  .sdot.running { background: var(--info); animation: breathe 2.4s ease-in-out infinite; }
+  .sdot.pending { background: none; border: 1.5px solid var(--ink-3); }
+  .mergeline { color: var(--ink-2); }
+  .clist + .mergeline { margin-top: 6px; }
+  .newer { position: fixed; left: 50%; bottom: 24px; z-index: 6; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px;
+             border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; font-weight: 500;
+             white-space: nowrap; cursor: pointer; box-shadow: 0 4px 16px rgba(0, 0, 0, .14); }
+  .newer:hover { border-color: var(--ink-3); }
+  .newer .ic { color: var(--ink-3); }
+  .emptycard { max-width: 640px; margin: 28px auto 0; padding: 22px 24px; }
+  .emptycard h2 { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+  .emptycard p { margin-top: 8px; color: var(--ink-2); }
+  .emptycard pre { margin: 12px 0 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--well); font: 12.5px/1.6 var(--mono); overflow-x: auto; }
+  .emptycard .btn { margin-top: 12px; }
+
+  /* live CI and queue */
+  .hero { padding: 20px 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  .hero.good { border-color: color-mix(in srgb, var(--good) 40%, var(--line)); background: color-mix(in srgb, var(--good) 6%, var(--surface)); }
+  .hero.warn { border-color: color-mix(in srgb, var(--warn) 65%, var(--line)); background: color-mix(in srgb, var(--warn) 9%, var(--surface)); }
+  .hero.bad { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); background: color-mix(in srgb, var(--bad) 7%, var(--surface)); }
+  .hero-h { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 12px; align-items: start; }
+  .hero-h > .lamp { width: 10px; height: 10px; margin: 8px 5px 0; }
+  .hero-h > .ic { width: 20px; height: 20px; margin-top: 3px; stroke-width: 2; color: var(--good); }
+  .hero h1 { font-size: 20px; line-height: 26px; font-weight: 600; letter-spacing: -0.015em; text-wrap: balance; }
+  .nb { white-space: nowrap; }
+  .hero-sub { margin-top: 2px; font-size: 13.5px; color: var(--ink-2); }
+  .hero-sub b { font-weight: 600; color: var(--ink); }
+  .hero-alert { display: flex; gap: 8px; margin-top: 4px; font-size: 13.5px; }
+  .hero-alert::before { content: '▲'; flex: none; font-size: 10px; line-height: 20px; color: var(--warn-ink); }
+  .hero-jobs { margin-top: 16px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--ink) 10%, transparent); }
+  .hero-more { display: block; margin: 4px 0 0 24px; padding: 4px 0; border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--ink-2); cursor: pointer; }
+  .hero-more:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+  .duo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+  .rn { padding: 12px 0; }
+  .rn + .rn { border-top: 1px solid var(--grid); }
+  .blk-h + .rn { padding-top: 4px; }
+  .rn:last-child { padding-bottom: 4px; }
+  .rn-h { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .rn-h .lamp { margin: 0 4px; }
+  .rn-h b { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+  .rn-h span { font-size: 12.5px; color: var(--ink-3); white-space: nowrap; }
+  .rn-h span:last-child { margin-left: auto; color: var(--ink-2); }
+  .rn-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; margin: 8px 0 0 24px; font-size: 12.5px; color: var(--ink-2); }
+  .rn-bar .meter { height: 6px; }
+  .rn-facts, .rn-note { margin: 4px 0 0 24px; font-size: 12.5px; color: var(--ink-3); overflow-wrap: anywhere; }
+  .rn-facts .hot { color: var(--bad-ink); font-weight: 600; }
+  .rn-note { color: var(--ink); }
+  .rn-tip { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--grid); }
+  .sect { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin-top: 20px; padding-top: 24px; border-top: 1px solid var(--line); }
+  .sect h2 { font-size: 16px; font-weight: 600; }
+  .sect span { font-size: 12.5px; color: var(--ink-3); }
+  .lg { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 2.5px; background: var(--ink-2); }
+  .lg.fast { width: 3px; border-radius: 1.5px; box-shadow: 5px 0 0 var(--ink-2); margin-right: 5px; }
+  .lg.cloud { background: none; border: 1.5px dashed var(--ink-2); }
+  .lg.other { background: none; border: 1.5px solid var(--ink-3); border-radius: 50%; }
+  .aj { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 1px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--grid); font-size: 13px; }
+  .blk-h + .aj { border-top: 0; padding-top: 0; }
+  a.aj:hover .what b { text-decoration: underline; text-underline-offset: 2px; }
+  .aj .what { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .aj .what b { font-weight: 600; }
+  .aj .what span { color: var(--ink-2); }
+  .aj .at { text-align: right; font-size: 12.5px; color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .aj .at b { color: var(--ink); font-weight: 600; }
+  .aj .sub { grid-column: 2 / 4; font-size: 12px; color: var(--ink-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .mgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); column-gap: 32px; margin: -4px 0 -12px; overflow: hidden; }
+  .mgrid .mcard { margin-top: -1px; padding: 14px 0; border-top: 1px solid var(--grid); }
+  html.standalone .mname { font-size: 13px; }
+
+  /* how CI works */
+  .fl-intro h1 { font-size: 22px; line-height: 1.2; letter-spacing: -0.02em; font-weight: 650; }
+  .fl-intro p { margin-top: 6px; color: var(--ink-2); max-width: 66ch; text-wrap: pretty; }
+  .flow { display: flex; flex-direction: column; margin-top: 20px; }
+  .node-h { display: flex; align-items: flex-start; gap: 12px; }
+  .step { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--ink); color: var(--surface); font: 600 12px/1 var(--mono); }
+  .node-t { flex: 1; min-width: 0; }
+  .node-t h3 { font-size: 15px; font-weight: 600; line-height: 1.6; }
+  .node-t p { margin-top: 1px; color: var(--ink-2); max-width: 64ch; }
+  .where { flex: none; margin-top: 2px; padding: 0 9px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; line-height: 20px; color: var(--ink-2); white-space: nowrap; }
+  .tech { margin: 10px 0 0 36px; font-size: 12.5px; color: var(--ink-2); }
+  .wire { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .fl-link { position: relative; display: grid; place-items: center; height: 40px; color: var(--ink-3); }
+  .fl-link span { position: absolute; left: calc(50% + 16px); top: 50%; transform: translateY(-50%); font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+  .fl-link.m { display: none; }
+  .fl-branch { width: 100%; height: 44px; color: var(--ink-3); }
+  .card.hub { border-color: color-mix(in srgb, var(--ink) 30%, var(--line)); }
+  .lineviz { margin: 16px 0 0 36px; }
+  .lv-row { display: flex; align-items: center; gap: 7px; min-height: 18px; color: var(--ink-2); }
+  .lv-row i { flex: none; width: 10px; height: 10px; border-radius: 50%; background: color-mix(in srgb, var(--ink-2) 70%, transparent); }
+  .lv-row i.rel { margin: 0 3px; background: var(--ink); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--ink); }
+  .lv-row i.f1 { opacity: .7; } .lv-row i.f2 { opacity: .45; } .lv-row i.f3 { opacity: .25; }
+  .lv-row .tail { flex: 1; min-width: 12px; border-top: 1.5px dashed var(--line); }
+  .lv-caps { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 16px; margin-top: 9px; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .lv-caps b { color: var(--ink); font-weight: 600; }
+  .facts3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px; border-top: 1px solid var(--line); }
+  .facts3 > div { padding: 14px 16px 0 0; }
+  .facts3 > div + div { padding-left: 16px; border-left: 1px solid var(--line); }
+  .facts3 > div:last-child { padding-right: 0; }
+  .facts3 h4 { display: flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 600; }
+  .facts3 h4 .ic { width: 16px; height: 16px; }
+  .facts3 p { margin-top: 4px; font-size: 13px; color: var(--ink-2); }
+  .router { align-self: center; display: inline-flex; align-items: center; gap: 10px; padding: 7px 16px 7px 7px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); font-size: 13.5px; font-weight: 600; }
+  .fl-lanes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .fl-lane-top { display: flex; align-items: center; gap: 8px; }
+  .fl-lane-top h3 { font-size: 14px; font-weight: 600; }
+  .fl-lane-top .lg { width: 12px; height: 12px; border-radius: 3px; background: var(--ink); }
+  .fl-lane-top .lg.fast { width: 4px; border-radius: 2px; box-shadow: 7px 0 0 var(--ink); margin-right: 7px; }
+  .fl-lane-top .lg.cloud { background: none; border-color: var(--ink); }
+  .fl-big { margin-top: 12px; font-size: 28px; line-height: 1.05; font-weight: 650; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; }
+  .fl-big-sub { margin-top: 3px; font-size: 12.5px; color: var(--ink-2); }
+  .fl-lane-body { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; }
+  .fl-lane-body > * + * { margin-top: 10px; }
+  .fl-lane-body .fine { color: var(--ink-2); }
+  .mini-dl { display: grid; gap: 8px; }
+  .mini-dl dt { font: 600 12.5px/1.4 var(--mono); overflow-wrap: anywhere; }
+  .mini-dl dd { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .life { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 18px 0 0 36px; }
+  .life li { position: relative; padding: 24px 14px 0 0; }
+  .life li::before { content: ''; position: absolute; left: 0; top: 2px; width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--ink-2); background: var(--surface); }
+  .life li.is-run::before { background: var(--good); border-color: var(--good); }
+  .life li.is-end::before { background: var(--ink); border-color: var(--ink); }
+  .life li::after { content: ''; position: absolute; left: 18px; right: 8px; top: 7.25px; border-top: 1.5px solid var(--line); }
+  .life li:last-child::after { display: none; }
+  .life b { display: block; font-size: 13.5px; font-weight: 600; }
+  .life span { display: block; margin-top: 1px; font-size: 12.5px; color: var(--ink-2); }
+  .net { display: flex; align-items: flex-start; gap: 9px; margin: 16px 0 0 36px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--ink-2); }
+  .net .ic { width: 16px; height: 16px; margin-top: 2px; color: var(--good); }
+  .net b { color: var(--ink); font-weight: 600; }
+  .sm { position: relative; display: grid; gap: 56px; margin: 6px 0 0 36px; padding: 40px 0 38px; }
+  .sm-row { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 10px; }
+  .sm-node { position: relative; z-index: 1; min-width: 0; padding: 9px 10px 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+             color: inherit; font: inherit; text-align: left; cursor: pointer; transition: opacity .15s; }
+  .sm-node:hover { border-color: var(--ink-3); }
+  .sm-node .n { display: block; font-size: 22px; font-weight: 650; line-height: 1.1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .sm-node .n.zero { color: var(--ink-3); }
+  .sm-node .nm { display: block; margin-top: 4px; font-size: 13px; font-weight: 600; line-height: 1.3; }
+  .sm-node .cd { display: block; font: 10.5px/1.5 var(--mono); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sm-node.end { background: var(--well); }
+  .sm-node.sel { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
+  .sm-node.to { border-color: var(--info); box-shadow: 0 0 0 1px color-mix(in srgb, var(--info) 45%, transparent); }
+  .sm-node.dim { opacity: .5; }
+  .sm-node.dim:hover, .sm-node.dim:focus-visible { opacity: 1; }
+  .sm-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+  .sm-top .n { flex: none; }
+  .sm-ev { flex: 0 1 auto; min-width: 0; margin-top: 3px; padding: 0 5px; border-radius: 4px; background: color-mix(in srgb, var(--info) 18%, transparent);
+           font: 600 10.5px/16px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sm-wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .sm-wires path { fill: none; stroke: var(--ink-2); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .sm-d { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px 28px; margin-left: 36px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .sm-d h4 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+  .sm-d h5 { margin-top: 12px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+  .sm-d > div > h5:first-child { margin-top: 2px; }
+  .sm-d p { margin-top: 4px; font-size: 13px; color: var(--ink-2); }
+  .sm-t { margin-top: 4px; }
+  .sm-t li { display: grid; grid-template-columns: minmax(0, auto) auto minmax(0, 1fr); gap: 8px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--grid); font-size: 12.5px; }
+  .sm-t li:first-child { border-top: 0; }
+  .sm-t li > span { color: var(--ink-2); }
+  .sm-d .aj:first-of-type { border-top: 0; }
+
+  /* screenshot viewer */
+  .lb { position: fixed; inset: 0; z-index: 20; display: grid; grid-template-rows: minmax(0, 1fr) auto; background: rgba(8, 8, 8, .92); color: #f0efec; font-size: 13px; }
+  .lb-stage { display: grid; place-items: center; min-height: 0; padding: 56px 64px 8px; overflow: auto; cursor: zoom-out; }
+  .lb-stage img { display: block; max-width: 100%; max-height: calc(100vh - 130px); border-radius: 6px; background: #1a1a19; cursor: zoom-in; }
+  .lb.actual .lb-stage { place-items: start center; }
+  .lb.actual .lb-stage img { max-width: none; max-height: none; cursor: zoom-out; }
+  .lb-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 14px; padding: 10px 20px 18px; }
+  .lb-bar .n, .lb-bar a { color: #c3c2b7; font-variant-numeric: tabular-nums; }
+  .lb-bar a { text-decoration: underline; text-underline-offset: 2px; }
+  .lb-btn { position: absolute; display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 1px solid rgba(255, 255, 255, .28); border-radius: 50%;
+            background: rgba(26, 26, 25, .85); color: #f0efec; cursor: pointer; }
+  .lb-btn:hover { border-color: #f0efec; }
+  .lb-btn .ic { width: 16px; height: 16px; }
+  .lb-x { top: 14px; right: 16px; }
+  .lb-prev { left: 14px; top: 50%; margin-top: -18px; }
+  .lb-next { right: 14px; top: 50%; margin-top: -18px; }
+
+  @media (max-width: 780px) {
+    .wrap { padding: 0 16px; }
+    .card { padding: 14px; }
+    .top { top: calc(-1 * var(--row-h, 0px)); }
+    .top-row { flex-wrap: wrap; min-height: 0; }
+    .brand { height: 44px; }
+    .tabs { order: 3; flex: 1 0 100%; height: 40px; margin: 0 -8px; }
+    .livebox .fresh:not(.stale) { display: none; }
+    .view { padding: 20px 0 64px; }
+    .pr-grid { grid-template-columns: minmax(0, 1fr); margin-top: 16px; }
+    .rail { display: none; }
+    .rail-m { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin-bottom: 12px; }
+    .rail-m select { flex: 1 1 200px; min-width: 0; height: 36px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink);
+                     font: inherit; font-size: 16px; }
+    .rail-m .tick span { margin-left: 0; }
+    .pr-bar { flex-wrap: wrap; }
+    .vtabs { flex: 1 0 100%; }
+    .search { flex: 1 1 0; margin-left: 0; }
+    .search .ic { top: 11px; }
+    .search input { height: 36px; font-size: 16px; }
+    .modes button { width: 36px; height: 34px; }
+    .pr { padding: 14px; }
+    .pr-foot { gap: 4px 12px; }
+    .reel.two, .reel.three { grid-template-columns: minmax(0, 1fr); }
+    .reel.shots.two, .reel.shots.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .hero { padding: 16px; }
+    .hero h1 { font-size: 18px; line-height: 24px; }
+    .duo, .mgrid { grid-template-columns: minmax(0, 1fr); }
+    html.standalone .jl { grid-template-columns: 16px minmax(0, 1fr) auto; }
+    html.standalone .jl .spot { grid-column: 2 / -1; grid-row: 2; max-width: none; }
+    .node-h { flex-wrap: wrap; }
+    .node-t { flex-basis: calc(100% - 36px); }
+    .where { margin-left: 36px; }
+    .tech, .lineviz, .life, .net, .sm, .sm-d { margin-left: 0; }
+    .fl-branch { display: none; }
+    .fl-link.m { display: grid; }
+    .facts3, .fl-lanes, .sm-d { grid-template-columns: minmax(0, 1fr); }
+    .facts3 > div, .facts3 > div + div { padding: 12px 0; border-left: 0; }
+    .facts3 > div + div { border-top: 1px solid var(--line); }
+    .facts3 > div:last-child { padding-bottom: 0; }
+    .life { grid-template-columns: minmax(0, 1fr); }
+    .life li { padding: 0 0 14px 26px; }
+    .life li:last-child { padding-bottom: 0; }
+    .life li::before { top: 4px; }
+    .life li::after { left: 5.25px; right: auto; top: 20px; bottom: 0; border-top: 0; border-left: 1.5px solid var(--line); }
+    .sm { gap: 8px; padding: 14px 0; }
+    .sm-row { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .sm-node { grid-column-start: auto !important; }
+    .sm-wires, .sm-ev { display: none; }
+    .lb-stage { padding: 56px 12px 8px; }
+  }
+  /* a phone keeps the entry's last line to one line: the check count without its bar, the link as its arrow */
+  @media (max-width: 480px) {
+    .pr-foot .cibar { display: none; }
+    .pr-open { position: relative; margin: -6px -6px -6px auto; padding: 6px; }
+    .pr-open span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .pr-open .ic { width: 14px; height: 14px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .live, .lamp.on::after, .sdot.running, .iconbtn.busy .ic { animation: none; }
+    .chev, .grp-h .ic, .disc .ic, .sm-node { transition: none; }
+  }
 </style>
 </head>
 <body>
@@ -184,6 +621,7 @@
   const params = new URLSearchParams(location.search);
   const host = params.get('in');               // menubar, embed (an iframe in another app), or none (a browser tab)
   document.documentElement.classList.add(host === 'menubar' ? 'menubar' : host ? 'embedded' : 'standalone');
+  if (host) document.body.classList.add('compact');
   if (params.get('theme')) document.documentElement.dataset.theme = params.get('theme');
 
   const clock = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -194,11 +632,13 @@
   let status = null;
   let problem = null;
   let names = [];                               // machine order, which fixes each machine's color
+  let chartW = 0;                               // the width charts draw at, when it is not the whole page
 
   // Colors follow the machine, never its rank: slot by position in the hub's list (8 slots, then they repeat).
   const color = (name) => `var(--c${(Math.max(0, names.indexOf(name)) % 8) + 1})`;
   const resultColor = { success: 'var(--good)', failure: 'var(--bad)' };
 
+  // Every node is built here and text only ever lands in textContent, so a PR title or job name can't become markup.
   const el = (tag, attrs = {}, ...kids) => {
     const node = tag.startsWith('svg:') ? document.createElementNS(NS, tag.slice(4)) : document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
@@ -218,7 +658,7 @@
   };
   const short = (repo) => (repo || '').split('/').pop();
   const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
-  const width = () => Math.max(260, app.clientWidth);
+  const width = () => Math.max(260, chartW || app.clientWidth);
   const verdict = (r) => (r === 'success' ? '✓ passed' : r === 'failure' ? '✗ failed' : `– ${r}`);
 
   // Every job as an interval: finished ones from the last 6 hours, plus the ones running now.
@@ -335,7 +775,7 @@
     return el('div', { class: `tile${hot ? ' hot' : ''}${none ? ' none' : ''}` },
       el('div', { class: 'lab' }, el('span', { text: label }), flag ? el('span', { class: `flag ${flagClass || (hot ? '' : 'warm')}`, text: flag }) : null),
       el('div', { class: 'val' }, value, unit ? el('small', { text: unit }) : null),
-      el('div', { class: 'sub', text: sub || ' ', title: sub || null }),
+      el('div', { class: 'sub', text: sub || ' ', title: sub || null }),
       chart || el('svg:svg', { viewBox: '0 0 100 24' }));
   }
 
@@ -400,7 +840,7 @@
   }
 
   function machineRows() {
-    const wrap = el('div');
+    const wrap = el('div', { class: 'mgrid' });
     for (const m of status.machines) {
       const card = el('div', { class: 'mcard' });
       const head = el('div', { class: 'mhead' }, el('div', { class: 'mname' }, el('span', { class: 'dot', style: { background: color(m.name) } }), m.name));
@@ -442,34 +882,57 @@
     return wrap;
   }
 
-  // ---- running now, each with how far along it is against that job's usual time
-  function runningList(now) {
+  // ---- one job as a row: a mark, what it is, where it ran and when. Every list of jobs is made of these.
+  const RESULT_WORD = { success: 'passed', failure: 'failed', cancelled: 'was cancelled' };
+  const resultWord = (r) => RESULT_WORD[r] || `ended ${r || 'unknown'}`;
+  const laneOf = (lane, long) => (!lane ? null : long ? (LANES[String(lane).toLowerCase()] || [String(lane)])[0] : String(lane).toLowerCase());
+  const machineFill = (name) => (names.includes(name) ? color(name) : 'var(--ink-3)');
+  const mark = {
+    machine: (name, dim) => el('i', { class: 'lead dot', style: { background: machineFill(name), opacity: dim ? 0.4 : null } }),
+    waiting: () => el('i', { class: 'lead ring' }),
+    result: (r) => (r === 'success' ? icon('check', 'lead ok') : r === 'failure' ? icon('x', 'lead no') : icon('dash', 'lead na')),
+  };
+
+  function jobLine(lead, j, where, when, tail = []) {
+    return el(safe(j.url) ? 'a' : 'div', { class: 'jl', href: safe(j.url), target: '_blank', rel: 'noopener noreferrer' },
+      lead,
+      el('div', { class: 'what' }, el('b', { text: short(j.repo) }), el('span', { text: ` ${j.job}` }), ...(j.release ? [' ', el('span', { class: 'rel', text: 'Release' })] : [])),
+      el('div', { class: 'spot', text: where || '' }),
+      el('div', { class: 'when', text: when || '' }),
+      ...tail);
+  }
+
+  // Running now, each with how far along it is against that job's usual time. `long` spells out the lane and the
+  // usual time; the panel keeps both short.
+  function liveRows(live, now, long) {
     const usual = usualTimes();
-    const wrap = el('div');
-    const jobs = status.machines.flatMap((m) => m.jobs.map((j) => ({ ...j, machine: m.name })))
-      .sort((a, b) => (a.since || 0) - (b.since || 0));
-    if (!jobs.length) wrap.append(el('div', { class: 'empty', text: 'Nothing running. Every machine is idle.' }));
-    for (const j of jobs) {
-      const starting = j.state === 'starting';
-      const elapsed = now - (j.since || now);
-      const norm = starting ? null : usual(j);
-      const row = el(safe(j.url) ? 'a' : 'div', { class: 'run', href: safe(j.url), target: '_blank', rel: 'noopener' },
-        el('span', { class: 'dot', style: { background: color(j.machine), opacity: starting ? 0.4 : 1 } }),
-        el('div', { class: 'what' }, el('b', { text: short(j.repo) }), el('span', { text: `  ${j.job || 'starting…'}` })),
-        el('div', { class: 'when', text: starting ? 'starting' : norm ? `${dur(elapsed)} of ~${dur(norm)}` : dur(elapsed) }));
-      if (!starting) {
-        const share = norm ? Math.min(1, elapsed / norm) : null;
-        const over = norm && elapsed > norm * 1.5;
-        row.append(el('div', { class: 'bar' }, el('i', { style: {
-          width: share == null ? '100%' : `${Math.max(3, share * 100)}%`,
-          background: over ? 'var(--warn)' : color(j.machine), opacity: share == null ? 0.22 : 1 } })));
-      }
-      hoverable(row, [j.repo, [j.machine, j.label].filter(Boolean).join(' · '),
-        starting ? 'machine starting; waiting for GitHub to hand it the job'
-          : `running ${dur(elapsed)}${norm ? `; usually ${dur(norm)}${elapsed > norm * 1.5 ? ' (running long)' : ''}` : ''}`].join('\n'));
-      wrap.append(row);
-    }
-    return wrap;
+    return live.map((j) => {
+      const running = j.phase === 'running', elapsed = j.since ? now - j.since : null;
+      const norm = running && elapsed != null ? usual(j) : null, over = norm && elapsed > norm * 1.5;
+      const share = norm ? Math.min(1, elapsed / norm) : null;
+      const when = !running ? j.phase : elapsed == null ? '' : norm && long ? `${dur(elapsed)} of ~${dur(norm)}` : dur(elapsed);
+      const bar = el('div', { class: 'bar' }, el('i', { style: {
+        width: share == null ? '100%' : `${Math.max(3, share * 100)}%`,
+        background: over ? 'var(--warn)' : machineFill(j.machine), opacity: share == null ? 0.22 : 1 } }));
+      const row = jobLine(mark.machine(j.machine, !running), j, [j.machine, laneOf(j.lane, long)].filter(Boolean).join(' · '), when, running ? [bar] : []);
+      return hoverable(row, [j.repo, [j.machine, j.label].filter(Boolean).join(' · '),
+        !running ? (j.phase === 'starting' ? 'starting: its machine is booting, or it waits for GitHub to hand it the job' : j.phase)
+          : `running ${dur(elapsed || 0)}${norm ? `; usually ${dur(norm)}${over ? ' (running long)' : ''}` : ''}`].join('\n'));
+    });
+  }
+
+  function doneRows(done, now, long) {
+    return done.map((j) => hoverable(
+      jobLine(mark.result(j.result), j, [j.machine, laneOf(j.lane), long && j.started ? `took ${dur(j.finished - j.started)}` : null].filter(Boolean).join(' · '),
+        `${age(now - j.finished)} ago`),
+      () => tipFor({ ...j, s: j.started, e: j.finished }, now)));
+  }
+
+  // Waiting in line: how long, and the queue's own words for why. `full` lets a long reason run onto more lines.
+  function waitRows(queued, full) {
+    return queued.map((j) => jobLine(mark.waiting(), { repo: j.repo, job: j.job_name || 'job', url: j.url, release: j.is_release },
+      j.attempt > 1 ? `attempt ${j.attempt}` : '', j.waited_s != null ? waitFmt(j.waited_s) : '',
+      [el('div', { class: `sub${full ? ' full' : ''}`, text: j.wait_reason || 'The queue has not said why yet.', title: j.wait_reason || null })]));
   }
 
   // ---- the last hour as swimlanes: one band per machine, jobs packed into lanes
@@ -556,12 +1019,15 @@
   function hideTip() { tip.style.opacity = 0; }
 
   function freshness() {
+    const age = status ? Date.now() / 1000 - status.updated : 0;
+    const stale = age > 30 || !!problem;
+    document.documentElement.classList.toggle('stale', stale);      // every lamp turns red and stops pulsing
     const node = document.querySelector('.fresh');
-    if (!node || !status) return;
-    const age = Date.now() / 1000 - status.updated;
-    node.classList.toggle('stale', age > 30 || !!problem);
-    node.textContent = problem ? `${problem} · showing data from ${clock.format(status.updated * 1000)}`
-      : age < 10 ? 'updated just now' : `updated ${dur(age)} ago`;
+    if (!node) return;
+    node.classList.toggle('stale', stale);
+    if (!status) node.textContent = '';
+    else if (host) node.textContent = age < 10 ? 'updated just now' : `updated ${dur(age)} ago`;
+    else node.textContent = age < 2 ? 'Updated just now' : `Updated ${dur(age)} ago`;
   }
 
   // The menu bar app sizes its panel to the page; T3's card does the same.
@@ -573,18 +1039,9 @@
     if (host === 'embed') parent.postMessage({ type: 'lanes-height', height }, '*');
   }
 
-  // Fans roaring with no CI running: say which machine is hot and what is busy there, at the top.
-  function heatBanner() {
-    const hot = status.machines.filter((m) => m.hot);
-    if (!hot.length) return null;
-    return el('div', { class: 'heat' }, ...hot.map((m) => {
-      const top = (m.busiest || [])[0];
-      return el('div', {}, el('b', { text: `▲ ${m.name} is running hot: ${m.hot}` }), top ? ` · busiest: ${top.name} ${top.cpu}%` : '');
-    }));
-  }
-
-  // ---- compact layout (menu bar panel, T3 card): what each machine is doing at a glance, details on click, CI in
-  // brief, and the full charts one click away in the browser.
+  // ---- one picture of CI, for the panel and the dashboard alike: what is running, what just finished, who is
+  // online and what needs a look. The queue knows a job's runner and lane; a machine knows the jobs on it. A job
+  // both report is shown once, with what each of them knows.
   const opened = new Set((() => { try { return JSON.parse(localStorage.getItem('lanes-open') || '[]'); } catch { return []; } })());
   const saveOpened = () => { try { localStorage.setItem('lanes-open', JSON.stringify([...opened])); } catch {} };
   const real = () => status.machines.filter((m) => !m.virtual);
@@ -593,40 +1050,103 @@
     return temps.length ? Math.max(...temps) : null;
   };
 
-  // What needs attention, most urgent first: a hot or silent machine, then a CI job that just failed, then CI jobs
-  // running, then a warm machine. The top line says the first; the line under it says the other half.
-  const FAILED_RECENT_S = 30 * 60;
-  const recentFailures = (now) => status.history.filter((j) => j.result === 'failure' && now - j.finished < FAILED_RECENT_S).reverse();
-
-  function machineSummary() {
-    const hot = real().filter((m) => m.hot), down = real().filter((m) => !m.ok);
-    const warm = real().filter((m) => m.ok && !m.hot && heatOf(m) >= WARM_C);
-    const trouble = [...hot.map((m) => `▲ ${m.name} is running hot: ${m.hot}`), ...down.map((m) => `▲ ${m.name} is not answering`)];
-    if (trouble.length) return { text: trouble.join('\n'), bad: true };
-    if (warm.length) return { text: `${warm.map((m) => `${m.name} is warm (${Math.round(heatOf(m))}°C)`).join(', ')}; the rest normal` };
-    return { text: `All ${real().length} machines normal`, calm: true };
-  }
-
-  function ciSummary(now) {
-    const failed = recentFailures(now), running = status.running;
-    if (failed.length) {
-      const f = failed[0];
-      return { text: failed.length === 1 ? `✗ ${short(f.repo)} ${f.job} failed ${dur(now - f.finished)} ago` : `✗ ${failed.length} CI jobs failed in the last 30 minutes`,
-        bad: true, active: true, also: running ? `${running} running` : null };
+  function liveJobs() {
+    const q = status.queue;
+    const rows = ((q && q.running) || []).map((j) => ({ repo: j.repo, job: j.job_name || 'job', machine: j.claimed_by || null, lane: j.claimed_lane || null,
+      since: j.started_at || j.claimed_at || null, phase: j.state === 'RUNNING' ? 'running' : j.state === 'TEARING_DOWN' ? 'cleaning up' : 'starting',
+      url: j.url, release: !!j.is_release }));
+    const matched = new Set(), extra = [];
+    for (const m of status.machines) {
+      for (const j of m.jobs) {
+        const twin = rows.find((r) => !matched.has(r) && r.repo === j.repo && r.job === j.job && (!r.machine || r.machine === m.name));
+        if (twin) {
+          matched.add(twin);
+          Object.assign(twin, { machine: m.name, since: twin.since || j.since || null, url: twin.url || j.url, label: j.label });
+          continue;
+        }
+        const starting = j.state === 'starting';
+        extra.push({ repo: j.repo, job: j.job || (starting ? 'starting…' : 'job'), machine: m.name, lane: null, since: j.since || null,
+          phase: starting ? 'starting' : 'running', url: j.url, label: j.label });
+      }
     }
-    if (running) return { text: `${running} CI job${running === 1 ? '' : 's'} running${status.starting ? ` · ${status.starting} starting` : ''}`, active: true };
-    if (status.starting) return { text: `${status.starting} CI job${status.starting === 1 ? '' : 's'} starting`, active: true };
-    return { text: 'No CI jobs running', calm: true };
+    return [...rows, ...extra].sort((a, b) => (a.since || Infinity) - (b.since || Infinity));
   }
 
-  function compactHead(now) {
-    const mach = machineSummary(), ci = ciSummary(now);
-    const ciFirst = !mach.bad && (ci.bad || ci.active);
-    const [top, under] = ciFirst ? [ci, mach] : [mach, ci];
-    const subText = under === ci && ci.also ? `${ci.text} · ${ci.also}` : under.text;
-    return el('div', { class: 'c-head' },
-      el('div', {}, el('div', { class: `c-title${top.bad ? ' bad' : ''}`, style: { whiteSpace: 'pre-line' }, text: top.text }),
-        el('div', { class: `c-sub${under.bad ? ' bad' : ''}`, text: subText })),
+  const ENDED = { DONE: 'success', FAILED: 'failure', CANCELLED: 'cancelled' };
+  let doneOf = null, doneList = [];
+  function doneJobs() {
+    if (doneOf === status) return doneList;
+    const q = status.queue;
+    const rows = ((q && q.recent) || []).filter((j) => ENDED[j.state] && j.finished_at).map((j) => ({ repo: j.repo, job: j.job_name || 'job',
+      machine: j.claimed_by || null, lane: j.claimed_lane || null, started: j.started_at || null, finished: j.finished_at, result: ENDED[j.state], url: j.url }));
+    const matched = new Set(), extra = [];
+    for (const h of status.history) {
+      const twin = rows.find((r) => !matched.has(r) && r.repo === h.repo && r.job === h.job && Math.abs(r.finished - h.finished) < 300);
+      if (twin) {
+        matched.add(twin);
+        Object.assign(twin, { machine: twin.machine || h.machine, started: twin.started || h.started, url: twin.url || h.url, label: h.label });
+        continue;
+      }
+      extra.push({ repo: h.repo, job: h.job, machine: h.machine, lane: null, started: h.started, finished: h.finished, result: h.result, url: h.url, label: h.label });
+    }
+    doneOf = status;
+    doneList = [...rows, ...extra].sort((a, b) => b.finished - a.finished);
+    return doneList;
+  }
+
+  // Runners when the hub reads a queue, else the machines themselves.
+  function fleet() {
+    const workers = (status.queue && status.queue.workers) || [];
+    if (workers.length) return { online: workers.filter((w) => w.online).length, total: workers.length, word: 'runner' };
+    return { online: real().filter((m) => m.ok).length, total: real().length, word: 'machine' };
+  }
+
+  // What needs a look, one line per machine: a runner that is offline, paused or draining, else a machine that is
+  // silent or hot. A queue that stopped answering comes first.
+  function alerts() {
+    const by = new Map(), q = status.queue;
+    for (const m of real()) {
+      const top = (m.busiest || [])[0];
+      if (!m.ok) by.set(m.name, `${m.name} is not answering`);
+      else if (m.hot) by.set(m.name, `${m.name} is running hot: ${m.hot}${top ? ` · busiest: ${top.name} ${top.cpu}%` : ''}`);
+    }
+    for (const w of (q && q.workers) || []) {
+      if (!w.online) by.set(w.worker_id, `${w.worker_id} is offline${typeof w.age_s === 'number' ? `, last heard from ${dur(w.age_s)} ago` : ''}`);
+      else if (w.paused_reason) by.set(w.worker_id, `${w.worker_id} is paused: ${w.paused_reason.replace(/^paused:?\s*/i, '')}`);
+      else if (w.draining) by.set(w.worker_id, `${w.worker_id} is draining: finishing its jobs and taking no new ones`);
+    }
+    const out = [...by.values()];
+    if (q && q.error) out.unshift(`The queue is not answering (${q.error})${(q.workers || []).length ? '. Showing its last good reading' : ''}`);
+    return out;
+  }
+
+  function pulse() {
+    const live = liveJobs(), queued = (status.queue && status.queue.queued) || [], done = doneJobs(), warn = alerts();
+    return { live, queued, done, warn, fleet: fleet(), active: live.length + queued.length > 0, last: done[0] || null,
+      tone: problem ? 'bad' : warn.length ? 'warn' : 'good' };
+  }
+
+  const countsText = (p) => [`${p.live.length} running`, status.queue ? `${p.queued.length} waiting` : null].filter(Boolean).join(' · ');
+  // "web e2e passed 14m ago on build-01", with a failure in red.
+  const lastJob = (j, now) => [el('b', { text: short(j.repo) }), ` ${j.job} `, el('span', { class: j.result === 'failure' ? 'bad-t' : null, text: resultWord(j.result) }),
+    ` ${age(now - j.finished)} ago${j.machine ? ` on ${j.machine}` : ''}`];
+  const tallyText = (done) => `${done.filter((j) => j.result === 'success').length} passed, ${done.filter((j) => j.result === 'failure').length} failed`;
+
+  // ---- compact layout (menu bar panel, a card in another app): is CI alive, what is running, what just finished,
+  // then each machine at a glance with its details on click. The dashboard is one click away in the browser.
+  function compactHead(p, now) {
+    const f = p.fleet;
+    const title = problem ? "Can't reach the Lanes hub"
+      : p.active ? countsText(p)
+      : f.total && !f.online ? `No ${f.word} is online`
+      : `All caught up · ${f.online === f.total ? plural(f.total, f.word) : `${f.online} of ${plural(f.total, f.word)}`} online`;
+    const sub = problem ? [`Showing what it last said, at ${clock.format(status.updated * 1000)}`]
+      : p.active ? null
+      : p.last ? ['Last job: ', ...lastJob(p.last, now)]
+      : ['No job has finished in the last 6 hours'];
+    return el('div', { class: 'c-head' }, el('i', { class: `lamp on ${p.tone}` }),
+      el('div', {}, el('div', { class: 'c-title', text: title }), sub ? el('div', { class: 'c-sub' }, ...sub) : null,
+        ...p.warn.slice(0, 2).map((text) => el('div', { class: 'c-alert', text }))),
       el('div', { class: 'fresh' }));
   }
 
@@ -681,7 +1201,8 @@
   }
 
   function machineTable() {
-    const wrap = el('div', {}, el('div', { class: 'mt-cols' }, el('span'), ...['CPU', 'GPU', 'Memory', 'Heat'].map((t) => el('span', { text: t })), el('span')));
+    const wrap = el('div', { class: 'c-machines' }, el('div', { class: 'mt-cols' }, el('span', { text: 'Machines' }),
+      ...['CPU', 'GPU', 'Memory', 'Heat'].map((t) => el('span', { text: t })), el('span')));
     for (const m of real()) {
       const block = el('div', { class: `mt${opened.has(m.name) ? ' open' : ''}${m.hot || !m.ok ? ' trouble' : ''}` });
       const name = el('div', { class: 'mt-name' }, el('div', { class: 'mname' }, el('span', { class: 'dot', style: { background: color(m.name) } }), m.name));
@@ -703,7 +1224,7 @@
             hotNow ? 'var(--bad)' : heat >= WARM_C ? 'var(--warn)' : 'var(--ink-3)', hotNow ? 'bad' : null),
         ];
       }
-      const row = el('div', { class: 'mt-row', role: 'button', tabindex: 0, 'aria-expanded': String(opened.has(m.name)) },
+      const row = el('div', { class: 'mt-row', role: 'button', tabindex: 0, 'aria-expanded': String(opened.has(m.name)), title: m.ok ? 'Its last 2 hours' : null },
         name, ...cells, el('div', { class: 'chev', text: '▶' }));
       const toggle = () => { opened.has(m.name) ? opened.delete(m.name) : opened.add(m.name); saveOpened(); render(); };
       row.addEventListener('click', toggle);
@@ -712,91 +1233,994 @@
       if (m.ok && opened.has(m.name)) block.append(details(m));
       wrap.append(block);
     }
+    // A machine a source reports for, such as a cloud provider: what it has left.
+    for (const m of status.machines.filter((v) => v.virtual && v.meter && v.meter.max)) {
+      const share = m.meter.value / m.meter.max;
+      wrap.append(el('div', { class: 'c-meter' },
+        el('div', { class: 'vrow' }, el('div', { class: 'mname' }, el('span', { class: 'dot', style: { background: color(m.name) } }), m.name),
+          el('span', { class: 'chip', text: `${m.meter.value} of ${m.meter.max} ${m.meter.label || ''}`.trim() })),
+        meter(share, share < 0.15 ? 'var(--bad)' : share < 0.3 ? 'var(--warn)' : 'var(--ink-2)', m.meter.label)));
+    }
     return wrap;
   }
 
-  function ciBrief(now) {
-    const done = status.history;
-    const passed = done.filter((j) => j.result === 'success').length, failed = done.filter((j) => j.result === 'failure').length;
-    const times = done.filter((j) => j.started).map((j) => j.finished - j.started);
-    const line = el('div', { class: 'ci-line' });
-    if (done.length) {
-      line.append(el('span', {}, el('span', { class: 'ok-i', text: '✓ ' }), el('b', { text: passed }), ' passed'),
-        el('span', {}, el('span', { class: 'bad-i', text: '✗ ' }), el('b', { text: failed }), ' failed'));
-      if (times.length) line.append(el('span', {}, 'median ', el('b', { text: dur(median(times)) })));
-    } else {
-      line.append(el('span', { text: 'No jobs finished in the last 6 hours.' }));
+  function renderCompact(now) {
+    const p = pulse(), s = status.pr_summary, link = (hash) => ({ href: `${location.origin}/${hash}`, target: '_blank', rel: 'noopener' });
+    const label = (text, aside) => el('div', { class: 'c-label' }, el('span', { text }), aside ? el('span', { text: aside }) : null);
+    const kids = [compactHead(p, now)];
+    if (p.live.length) {
+      const cut = p.live.length > 6 ? 5 : p.live.length;
+      kids.push(label('Running now'), ...liveRows(p.live.slice(0, cut), now, false));
+      if (cut < p.live.length) kids.push(el('a', { class: 'c-more', ...link('#ci'), text: `and ${p.live.length - cut} more running` }));
     }
-    const out = [];
-    const lately = recentFailures(now);
-    if (lately.length) {
-      const list = el('div', { style: { marginBottom: '6px' } });
-      for (const j of lately.slice(0, 3)) {
-        const row = el(safe(j.url) ? 'a' : 'div', { class: 'run fail', href: safe(j.url), target: '_blank', rel: 'noopener' },
-          el('span', { class: 'bad-i', text: '✗' }),
-          el('div', { class: 'what' }, el('b', { text: short(j.repo) }), el('span', { text: `  ${j.job}` })),
-          el('div', { class: 'when', text: `${dur(now - j.finished)} ago · ${j.machine}` }));
-        list.append(hoverable(row, () => tipFor({ ...j, s: j.started, e: j.finished }, now)));
-      }
-      out.push(list);
+    if (p.queued.length) {
+      kids.push(label('Waiting', `longest ${waitFmt(Math.max(...p.queued.map((j) => j.waited_s || 0)))}`), ...waitRows(p.queued.slice(0, 3), false));
+      if (p.queued.length > 3) kids.push(el('a', { class: 'c-more', ...link('#ci'), text: `and ${p.queued.length - 3} more waiting` }));
     }
-    if (status.machines.some((m) => m.jobs.length)) out.push(el('div', { style: { marginBottom: '6px' } }, runningList(now)));
-    out.push(line);
-    for (const m of status.machines.filter((v) => v.virtual && v.meter && v.meter.max)) {
-      const share = m.meter.value / m.meter.max;
-      out.push(el('div', { class: 'vrow' }, el('div', { class: 'mname' }, el('span', { class: 'dot', style: { background: color(m.name) } }), m.name),
-        el('span', { class: 'chip', text: `${m.meter.value} of ${m.meter.max} ${m.meter.label || ''}`.trim() })),
-        meter(share, share < 0.15 ? 'var(--bad)' : share < 0.3 ? 'var(--warn)' : color(m.name), m.meter.label));
-    }
-    return out;
+    kids.push(label('Recently finished', p.done.length ? `last 6 hours: ${tallyText(p.done)}` : null),
+      ...(p.done.length ? doneRows(p.done.slice(0, 4), now, false) : [el('div', { class: 'empty', text: 'No job has finished in the last 6 hours.' })]),
+      machineTable(),
+      el('div', { class: 'foot' }, el('a', link(''), 'Open full dashboard', icon('ext')),
+        s && s.open ? el('a', { ...link('#prs'), text: `${plural(s.open, 'PR')}${s.with_proof ? ` · ${s.with_proof} with proof` : ''}` }) : null,
+        el('span', { text: 'Esc to close' })));
+    app.replaceChildren(...kids);
   }
 
-  // Whichever half needs attention comes first: CI while jobs run or one just failed, unless a machine is in trouble.
-  function renderCompact(now) {
-    const machines = [el('div', { class: 'c-label' }, el('span', { text: 'Machines' }), el('span', { text: 'click a machine for its last 2 hours' })),
-      machineTable()];
-    const ci = [el('div', { class: 'c-label' }, el('span', { text: 'CI' }), el('span', { text: 'last 6 hours' })), ...ciBrief(now)];
-    const ciFirst = !machineSummary().bad && ciSummary(now).active;
-    app.replaceChildren(
-      compactHead(now),
-      ...(ciFirst ? [...ci, ...machines] : [...machines, ...ci]),
-      el('div', { class: 'foot' }, el('a', { href: `${location.origin}/`, target: '_blank', rel: 'noopener', text: 'Open full view ↗' }),
-        el('span', { text: 'Esc to close' })),
-    );
+  // ---- the dashboard: the page in a browser tab. Three views behind tabs: pull requests with their proof, live CI
+  // and the queue, and how CI works. Everything shown comes from /status.json and /prs.json.
+  const ICONS = {
+    check: 'M3.5 8.5l3 3 6-7',
+    x: 'M4 4l8 8M12 4l-8 8',
+    dash: 'M4 8h8',
+    up: 'M8 13V3M4 7l4-4 4 4',
+    spin: 'M13 8a5 5 0 11-1.6-3.7M13 2.5V5h-2.5',
+    clock: 'M8 2a6 6 0 100 12A6 6 0 008 2zM8 4.5V8l2.5 1.5',
+    lock: 'M5 7h6a1.5 1.5 0 011.5 1.5V12a1.5 1.5 0 01-1.5 1.5H5A1.5 1.5 0 013.5 12V8.5A1.5 1.5 0 015 7zM5.5 7V5a2.5 2.5 0 015 0v2',
+    ext: 'M9.5 3H13v3.5M13 3L7.5 8.5M11 9.5V12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1h2.5',
+    chev: 'M6 4l4 4-4 4',
+    left: 'M10 3L5 8l5 5',
+    right: 'M6 3l5 5-5 5',
+    search: 'M7 12A5 5 0 107 2a5 5 0 000 10zM14 14l-3.4-3.4',
+    grouped: 'M2.5 3h11v4h-11zM2.5 9.5h11v4h-11z',
+    list: 'M2.5 4h11M2.5 8h11M2.5 12h11',
+  };
+  const icon = (name, cls) => el('svg:svg', { class: `ic${cls ? ` ${cls}` : ''}`, viewBox: '0 0 16 16', 'aria-hidden': 'true' }, el('svg:path', { d: ICONS[name] }));
+  const code = (text) => el('code', { text });
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const n1 = (v) => Math.round(v * 10) / 10;
+  const age = (s) => (s >= 172800 ? `${Math.floor(s / 86400)} days` : s >= 3600 ? `${Math.floor(s / 3600)}h` : dur(s));
+  const waitFmt = (s) => (s < 3600 ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : dur(s));
+  const dotted = (parts) => parts.filter((part) => part != null && part !== '').flatMap((part, i) => (i ? [' · ', part] : [part]));
+  // Proof comes through the hub's own /media proxy; anything else must be a plain web link.
+  const mediaSrc = (url) => (typeof url === 'string' && /^\/media\?/.test(url) ? url : safe(url));
+  const narrow = () => matchMedia('(max-width: 780px)').matches;
+  const blockHead = (title, aside) => el('div', { class: 'blk-h' }, el('h2', { text: title }), aside ? el('span', { text: aside }) : null);
+  const hubProblem = () => (problem
+    ? el('div', { class: 'problem' }, el('b', { text: "Can't reach the Lanes hub" }),
+        `Nothing answers at ${location.host}. Is \`lanes hub\` running, and the tunnel to it up?`)
+    : el('div', { class: 'problem', text: 'Loading…' }));
+
+  // Rebuilding part of the page drops keyboard focus. Put it back on the same control: the node itself when it
+  // survived, else the new node carrying the same data-k.
+  function keepFocus(root, rebuild) {
+    const was = root.contains(document.activeElement) ? document.activeElement : null;
+    const key = was && was.dataset ? was.dataset.k : null;
+    rebuild();
+    if (!was || document.activeElement === was) return;
+    const next = was.isConnected ? was : key ? [...root.querySelectorAll('[data-k]')].find((n) => n.dataset.k === key) : null;
+    if (next) next.focus({ preventScroll: true });
+  }
+
+  const TABS = [['prs', 'Pull Requests'], ['ci', 'Live CI & Queue'], ['flow', 'How CI Works']];
+  const ui = { tabs: {}, views: {} };
+  const scrolls = {};
+  let tab = null;
+  let tabChosen = false;                        // by a click or the address; until then the default follows the data
+  let prs = null;
+  let scopeCount = null;                        // the pull requests the PR view counts, bots left out when hidden
+  const hashTab = () => { const h = location.hash.slice(1); return TABS.some(([k]) => k === h) ? h : null; };
+  const defaultTab = () => (prs ? (prs.configured ? 'prs' : 'ci') : status ? (status.pr_summary ? 'prs' : 'ci') : problem ? 'ci' : null);
+
+  function buildShell() {
+    ui.glyph = el('span', { class: 'glyph', title: 'One lane per machine. A longer lane means more jobs running.' });
+    ui.lamp = el('i', { class: 'lamp on' });
+    ui.liveText = el('span', { text: 'Connecting…' });
+    ui.live = el('button', { class: 'live-btn', type: 'button', title: 'Show live CI and the queue' }, ui.lamp, ui.liveText);
+    ui.live.addEventListener('click', () => chooseTab('ci'));
+    ui.tablist = el('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Views' });
+    for (const [key, label] of TABS) {
+      const count = el('span', { class: 'n', hidden: '' });
+      const btn = el('button', { class: 'tab', type: 'button', role: 'tab', id: `tab-${key}`, 'aria-controls': `view-${key}`, 'aria-selected': 'false', tabindex: -1 }, label, count);
+      btn.addEventListener('click', () => chooseTab(key));
+      ui.tabs[key] = { btn, count };
+      ui.views[key] = el('section', { class: 'view', id: `view-${key}`, role: 'tabpanel', 'aria-labelledby': `tab-${key}`, hidden: '' });
+      ui.tablist.append(btn);
+    }
+    ui.tablist.addEventListener('keydown', (ev) => {
+      const step = ev.key === 'ArrowRight' ? 1 : ev.key === 'ArrowLeft' ? -1 : 0;
+      if (!step || !tab) return;
+      ev.preventDefault();
+      const next = TABS[(TABS.findIndex(([k]) => k === tab) + step + TABS.length) % TABS.length][0];
+      chooseTab(next);
+      ui.tabs[next].btn.focus();
+    });
+    ui.loading = el('div', { class: 'problem', text: 'Loading…' });
+    ui.top = el('header', { class: 'top' }, el('div', { class: 'wrap top-row' },
+      el('div', { class: 'brand' }, ui.glyph, 'Lanes'), ui.tablist,
+      el('div', { class: 'livebox' }, ui.live, el('span', { class: 'fresh' }))));
+    app.replaceChildren(ui.top, el('main', { class: 'wrap' }, ui.loading, ...TABS.map(([k]) => ui.views[k])));
+    buildPrView();
+  }
+
+  function showTab(key) {
+    if (tab) scrolls[tab] = scrollY;
+    tab = key;
+    ui.loading.hidden = true;
+    for (const [k] of TABS) {
+      ui.tabs[k].btn.setAttribute('aria-selected', String(k === key));
+      ui.tabs[k].btn.tabIndex = k === key ? 0 : -1;
+      ui.views[k].hidden = k !== key;
+    }
+    if (key !== 'prs') for (const v of ui.views.prs.querySelectorAll('video')) v.pause();
+    scrollTo(0, scrolls[key] || 0);
+  }
+
+  function chooseTab(key) {
+    tabChosen = true;
+    if (location.hash !== `#${key}`) history.replaceState(null, '', `#${key}`);
+    if (key !== tab) showTab(key);
+    render();
+  }
+
+  // The brand mark is the menu bar glyph: one lane per machine, as long as its share of the running jobs.
+  function brandGlyph() {
+    const rows = (status ? real() : []).slice(0, 4).map((m) => m.jobs.filter((j) => (j.state || 'running') === 'running').length);
+    if (!rows.length) rows.push(0, 0, 0);
+    const lane = rows.length > 3 ? 2.5 : 3, gap = rows.length > 3 ? 2 : 2.5, peak = Math.max(4, ...rows);
+    let y = (18 - (rows.length * lane + (rows.length - 1) * gap)) / 2;
+    const svg = el('svg:svg', { viewBox: '0 0 18 18', width: 18, height: 18, 'aria-hidden': 'true' });
+    for (const n of rows) {
+      svg.append(el('svg:rect', { x: 0, y, width: n ? Math.max(6, (18 * n) / peak) : 4, height: lane, rx: lane / 2, fill: 'currentColor', opacity: n ? 1 : 0.4 }));
+      y += lane + gap;
+    }
+    return svg;
+  }
+
+  // The top bar says it in one line: the lamp, what CI is doing, and how fresh that is. The line opens the CI view.
+  function renderTop() {
+    const p = status ? pulse() : null;
+    ui.lamp.className = `lamp on${problem ? ' bad' : p && p.tone !== 'good' ? ` ${p.tone}` : ''}`;
+    ui.liveText.textContent = problem ? 'Hub unreachable' : !p ? 'Connecting…' : p.active ? countsText(p) : 'All caught up';
+    const openPrs = prs && prs.configured ? scopeCount : status && status.pr_summary ? status.pr_summary.open : null;
+    const setCount = (key, n) => { ui.tabs[key].count.hidden = n == null; ui.tabs[key].count.textContent = n == null ? '' : n; };
+    setCount('prs', openPrs);
+    setCount('ci', p && p.active ? p.live.length + p.queued.length : null);
+    ui.glyph.replaceChildren(brandGlyph());
+    ui.top.style.setProperty('--row-h', `${ui.tablist.offsetTop}px`);       // on a phone only the tabs stay stuck
+  }
+
+  // ---- pull requests: a rail of repositories, one row of views, then one entry per open PR with its proof video or
+  // screenshots on a dark stage. An entry is built once and kept until that PR's data changes, and its stage is kept
+  // for as long as its media is the same, so a refresh never restarts a video.
+  const savedPrs = (() => { try { return JSON.parse(localStorage.getItem('lanes-prs') || '{}') || {}; } catch { return {}; } })();
+  const pv = { mode: savedPrs.mode === 'list' || savedPrs.view === 'unified' ? 'list' : 'grouped', hideBots: savedPrs.hideBots !== false,
+    collapsed: new Set(Array.isArray(savedPrs.collapsed) ? savedPrs.collapsed : []), repo: null, view: 'all', q: '', more: new Set() };
+  const savePv = () => { try { localStorage.setItem('lanes-prs', JSON.stringify({ mode: pv.mode, hideBots: pv.hideBots, collapsed: [...pv.collapsed] })); } catch {} };
+  const failing = (p) => (p.ci || {}).state === 'failing' || p.mergeable === 'CONFLICTING';
+  const VIEWS = [
+    ['all', 'All', () => true],
+    ['proof', 'With proof', (p) => p.has_proof],
+    ['ready', 'Ready', (p) => p.merge_ready],
+    ['failing', 'Failing', failing],
+  ];
+  let cards = new Map();                        // PR id -> { sig, pr, node, hay, proof, mediaSig }
+  let prsSig = '';
+  let pendingPrs = null;                        // newer data, held back while a video plays or the viewer is busy
+  let prsProblem = null;
+  let manyAuthors = false;                      // more than one person has PRs open, so an entry says whose it is
+  let lb = null;                                // the open screenshot viewer
+  const isPlaying = (v) => !v.paused && !v.ended;
+  const prBusy = () => !!lb || document.activeElement === ui.search || [...ui.prList.querySelectorAll('video')].some(isPlaying);
+
+  function buildPrView() {
+    ui.prTitle = el('h1', { text: 'Pull requests' });
+    ui.prSay = el('p', { class: 'pr-say' });
+    ui.stamp = el('span');
+    ui.refresh = el('button', { class: 'iconbtn', type: 'button', title: 'Refresh pull requests', 'aria-label': 'Refresh pull requests' }, icon('spin'));
+    ui.refresh.addEventListener('click', () => refreshPrs(true));
+    ui.prHead = el('div', { class: 'pr-top', hidden: '' }, el('div', {}, ui.prTitle, ui.prSay), el('div', { class: 'pr-stamp' }, ui.stamp, ui.refresh));
+    ui.prNote = el('p', { class: 'note warn pr-note', hidden: '' });
+    ui.repoList = el('ul');
+    ui.repoSelect = el('select', { 'aria-label': 'Repository' });
+    ui.repoSelect.addEventListener('change', () => { pv.repo = ui.repoSelect.value || null; layoutPrs(); });
+    ui.bots = [0, 1].map(() => {              // one in the rail, one beside the phone's repository menu
+      const box = el('input', { type: 'checkbox' }), count = el('span');
+      box.addEventListener('change', () => { pv.hideBots = box.checked; savePv(); layoutPrs(); });
+      return { box, count, label: el('label', { class: 'tick' }, box, 'Hide bot PRs', count) };
+    });
+    ui.vtabs = el('div', { class: 'vtabs', role: 'group', 'aria-label': 'Which pull requests to show' });
+    ui.search = el('input', { type: 'search', placeholder: 'Search', 'aria-label': 'Search pull requests', title: 'Search title, repo, #number, branch, author and files',
+      autocomplete: 'off', spellcheck: 'false' });
+    ui.search.addEventListener('input', () => { pv.q = ui.search.value; layoutPrs(); });
+    ui.modes = el('div', { class: 'modes', role: 'group', 'aria-label': 'How pull requests are arranged' });
+    for (const [key, label] of [['grouped', 'Group by repository'], ['list', 'One list, newest first']]) {
+      const b = el('button', { type: 'button', 'aria-pressed': String(pv.mode === key), 'aria-label': label, title: label }, icon(key));
+      b.addEventListener('click', () => {
+        pv.mode = key;
+        savePv();
+        for (const other of ui.modes.children) other.setAttribute('aria-pressed', String(other === b));
+        layoutPrs();
+      });
+      ui.modes.append(b);
+    }
+    ui.match = el('p', { class: 'pr-match', hidden: '' });
+    ui.prList = el('div', { class: 'pr-list' });
+    ui.prGrid = el('div', { class: 'pr-grid', hidden: '' },
+      el('nav', { class: 'rail', 'aria-label': 'Repositories' }, el('h2', { text: 'Repositories' }), ui.repoList, ui.bots[0].label),
+      el('div', {},
+        el('div', { class: 'rail-m' }, ui.repoSelect, ui.bots[1].label),
+        el('div', { class: 'pr-bar' }, ui.vtabs, el('label', { class: 'search' }, icon('search'), ui.search), ui.modes),
+        ui.match, ui.prList));
+    ui.prBlank = el('div', {}, el('div', { class: 'problem', text: 'Loading pull requests…' }));
+    ui.pending = el('button', { class: 'newer', type: 'button', hidden: '' }, icon('spin'), 'New updates — Refresh');
+    ui.pending.addEventListener('click', () => { if (pendingPrs) applyPrs(pendingPrs); });
+    ui.views.prs.append(ui.prHead, ui.prNote, ui.prGrid, ui.prBlank, ui.pending);
+  }
+
+  function clearFilters() {
+    pv.repo = null;
+    pv.view = 'all';
+    pv.q = '';
+    ui.search.value = '';
+    layoutPrs();
+  }
+
+  // The one thing to know about a PR, most pressing first. The checks bar in its last line still tells the rest.
+  function prStatus(p) {
+    const ci = (p.ci || {}).state;
+    if (ci === 'failing') return ['CI failing', 'bad'];
+    if (p.mergeable === 'CONFLICTING') return ['Merge conflicts', 'bad'];
+    if (p.is_draft) return ['Draft', 'none'];
+    if (ci === 'running') return ['CI running', 'info'];
+    if (p.merge_ready) return ['Ready', 'good'];
+    if (p.review_decision === 'CHANGES_REQUESTED') return ['Changes requested', 'warn'];
+    if (p.review_decision === 'REVIEW_REQUIRED') return ['Waiting on review', ''];
+    if (ci === 'pending') return ['CI pending', 'none'];
+    return [ci === 'passing' ? 'Checks passed' : 'No checks', 'none'];
+  }
+
+  // A video loads its first frame only once its card is near the screen, so a long feed doesn't fetch every proof at once.
+  const lazy = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      entry.target.src = entry.target.dataset.src;
+      lazy.unobserve(entry.target);
+    }
+  }, { rootMargin: '600px' }) : null;
+
+  const GENERIC_LABEL = new Set(['Proof video', 'Screenshot']);
+  function caption(m) {
+    const label = m.label && !GENERIC_LABEL.has(m.label) ? m.label : null, original = safe(m.original_url);
+    if (!label && !original) return null;
+    return el('figcaption', { class: 'cap' }, label ? el('span', { text: label, title: label }) : null,
+      original ? el('a', { href: original, target: '_blank', rel: 'noopener noreferrer', text: 'Original' }) : null);
+  }
+
+  function videoFigure(m) {
+    const video = el('video', { controls: '', playsinline: '', preload: 'metadata', 'aria-label': m.label || 'Proof video' });
+    const frame = el('div', { class: 'frame' }, video, el('div', { class: 'vmsg', text: "This video can't play here. Open the original to watch it." }));
+    video.addEventListener('error', () => frame.classList.add('broken'));
+    if (lazy) { video.dataset.src = mediaSrc(m.src); lazy.observe(video); } else video.src = mediaSrc(m.src);
+    return el('figure', {}, frame, caption(m));
+  }
+
+  function imageFigure(m, i, images) {
+    const img = el('img', { loading: 'lazy', alt: m.label || 'Screenshot', src: mediaSrc(m.src) });
+    const btn = el('button', { class: 'frame', type: 'button', 'aria-label': `Zoom in: ${m.label || 'screenshot'}` }, img,
+      el('span', { class: 'vmsg', text: "This image can't load here." }));
+    img.addEventListener('error', () => { btn.classList.add('broken'); btn.disabled = true; });
+    btn.addEventListener('click', () => openLightbox(images, i, btn));
+    return el('figure', {}, btn, caption(m));
+  }
+
+  // The stage: videos full width (side by side when there are two or more, such as before and after), screenshots
+  // under them or alone.
+  function proofStage(media) {
+    if (!media.length) return null;
+    const videos = media.filter((m) => m.kind === 'video'), images = media.filter((m) => m.kind !== 'video');
+    const cols = (n) => (n > 2 ? ' three' : n > 1 ? ' two' : '');
+    return el('div', { class: 'proof' },
+      videos.length ? el('div', { class: `reel${videos.length > 1 ? ' two' : ''}` }, ...videos.map(videoFigure)) : null,
+      images.length ? el('div', { class: `reel shots${cols(images.length)}` }, ...images.map(imageFigure)) : null);
+  }
+
+  const CHECK_WORD = { passing: 'passed', failing: 'failed', running: 'running', pending: 'not started' };
+
+  function mergeLine(p) {
+    const base = p.base_ref || 'the base branch', said = [];
+    if (p.merge_ready) {
+      if (p.review_decision === 'APPROVED') said.push('Approved.');
+      said.push(`Ready to merge into ${base}.`);
+    } else {
+      if (p.is_draft) said.push('Still a draft.');
+      if (p.mergeable === 'CONFLICTING') said.push(`Has merge conflicts with ${base}.`);
+      if (p.review_decision === 'CHANGES_REQUESTED') said.push('A reviewer asked for changes.');
+      else if (p.review_decision === 'APPROVED') said.push('Approved.');
+      else if (p.review_decision === 'REVIEW_REQUIRED') said.push('Waiting on review.');
+    }
+    return said.length ? el('p', { class: 'mergeline', text: said.join(' ') }) : null;
+  }
+
+  // A quiet toggle in an entry's last line, with its panel under that line. What is open survives a rebuild.
+  const opens = new Map();                      // PR id -> the panels open on its entry
+  function disclose(p, key, label, body) {
+    const isOpen = (opens.get(p.id) || new Set()).has(key);
+    const panel = el('div', { class: 'pr-more', id: `${key}:${p.id}`, hidden: isOpen ? null : '' }, ...body);
+    const btn = el('button', { class: 'disc', type: 'button', 'aria-expanded': String(isOpen), 'aria-controls': panel.id, 'data-k': `${key}:${p.id}` }, ...label, icon('chev'));
+    btn.addEventListener('click', () => {
+      const set = opens.get(p.id) || new Set();
+      if (set.has(key)) set.delete(key); else set.add(key);
+      opens.set(p.id, set);
+      btn.setAttribute('aria-expanded', String(set.has(key)));
+      panel.hidden = !set.has(key);
+    });
+    return [btn, panel];
+  }
+
+  function ciBar(ci) {
+    const bar = el('span', { class: 'cibar', role: 'img',
+      'aria-label': `${ci.passed} of ${ci.total} checks passed, ${ci.failed} failed, ${ci.running} running, ${ci.pending} not started` });
+    for (const [cls, n] of [['', ci.passed], ['fail', ci.failed], ['run', ci.running], ['todo', ci.pending]]) {
+      if (n) bar.append(el('i', { class: cls || null, style: { flexGrow: n } }));
+    }
+    return bar;
+  }
+  // The status at the top of the entry already says running or waiting, so this line only counts.
+  const ciText = (ci) => (ci.failed ? `${ci.failed} of ${plural(ci.total, 'check')} failed`
+    : ci.pending && ci.pending === ci.total ? `${plural(ci.total, 'check')} waiting`
+    : `${ci.passed}/${plural(ci.total, 'check')} passed`);
+
+  function checksBody(p) {
+    const ci = p.ci || {}, checks = ci.checks || [];
+    const list = el('ul', { class: 'clist' });
+    for (const c of checks) {
+      const state = CHECK_WORD[c.state] ? c.state : 'pending';
+      list.append(el('li', {}, el('i', { class: `sdot ${state}` }),
+        el(safe(c.url) ? 'a' : 'span', { href: safe(c.url), target: '_blank', rel: 'noopener noreferrer', text: c.name,
+          title: safe(c.url) ? `${c.name}: open its log on GitHub` : c.name }),
+        el('em', { text: CHECK_WORD[state] })));
+    }
+    if (ci.total > checks.length) list.append(el('li', {}, el('i'), el('span', { class: 'rest', text: `and ${ci.total - checks.length} more on GitHub` }), el('em')));
+    return [checks.length ? list : null, mergeLine(p)];
+  }
+
+  function filesBody(p, count) {
+    const files = p.files || [];
+    return [el('ul', { class: 'flist' },
+      ...files.map((f) => el('li', {}, el('span', { class: 'path', text: f.path }), el('span', { class: 'add', text: `+${f.additions}` }), el('span', { class: 'del', text: `−${f.deletions}` }))),
+      count > files.length ? el('li', {}, el('span', { class: 'rest', text: `and ${plural(count - files.length, 'more file')} on GitHub` })) : null)];
+  }
+
+  const endStop = (text) => (/[.!?…:]$/.test(text) ? text : `${text}.`);
+
+  function buildCard(p, sig, old) {
+    const url = safe(p.url);
+    const media = (p.media || []).filter((m) => m && mediaSrc(m.src));
+    const mediaSig = JSON.stringify(media);
+    const proof = old && old.mediaSig === mediaSig ? old.proof : proofStage(media);
+    const [word, tone] = prStatus(p);
+    const ci = p.ci || {}, count = p.changed_files || (p.files || []).length;
+    const summary = (p.summary || '').trim(), reason = p.why && p.why !== p.summary && p.why.length <= 160 ? p.why.trim() : '';
+    const diff = [el('span', { class: 'add', text: `+${p.additions || 0}` }), el('span', { class: 'del', text: `−${p.deletions || 0}` }), el('span', { text: plural(count, 'file') })];
+    const [filesBtn, filesPanel] = (p.files || []).length ? disclose(p, 'files', diff, filesBody(p, count)) : [el('span', { class: 'disc' }, ...diff), null];
+    const [checksBtn, checksPanel] = ci.total ? disclose(p, 'checks', [ciBar(ci), el('span', { text: ciText(ci) })], checksBody(p)) : [el('span', { class: 'disc', text: 'No checks yet' }), null];
+    const node = el('article', { class: 'pr', 'aria-label': `${p.repo} #${p.number}` },
+      el('div', { class: 'pr-meta' },
+        el('span', { class: `st ${tone}` }, el('i'), word),
+        el('span', { text: `#${p.number}` }),
+        el('span', { class: 'pr-repo', text: short(p.repo), title: p.repo }),
+        p.is_bot || manyAuthors ? el('span', { text: p.is_bot ? `${(p.author || 'bot').replace(/\[bot\]$/, '')} (bot)` : p.author || 'unknown' }) : null,
+        p.is_release ? el('span', { text: 'release' }) : null,
+        p.updated_at ? el('time', { 'data-ts': p.updated_at, title: `Updated ${new Date(p.updated_at * 1000).toLocaleString()}` }) : null),
+      el(url ? 'a' : 'span', { class: 'pr-title', href: url, target: '_blank', rel: 'noopener noreferrer', text: p.title || 'Untitled pull request',
+        title: p.head_ref ? `${p.head_ref} into ${p.base_ref || 'the base branch'}` : null }),
+      proof,
+      summary || reason ? el('p', { class: `pr-text${summary && reason ? ' three' : ''}` }, summary && reason ? `${endStop(summary)} ` : summary || null,
+        reason ? el('span', { text: reason }) : null) : null,
+      el('div', { class: 'pr-foot' }, filesBtn, checksBtn,
+        url ? el('a', { class: 'pr-open', href: url, target: '_blank', rel: 'noopener noreferrer' }, el('span', { text: 'Open on GitHub' }), icon('ext')) : null),
+      filesPanel, checksPanel);
+    return { sig, pr: p, node, hay: haystack(p), proof, mediaSig };
+  }
+
+  const haystack = (p) => [p.title, p.repo, `#${p.number}`, p.head_ref, p.author, p.summary, p.why, ...(p.files || []).map((f) => f.path)]
+    .filter(Boolean).join('\n').toLowerCase();
+
+  function prSetupCard() {
+    return el('div', { class: 'card emptycard' },
+      el('h2', { text: 'Pull requests are not connected yet' }),
+      el('p', {}, 'Add a ', code('[pull_requests]'), ' section to ', code('hub.toml'), ' on the hub, list the GitHub users or organizations to watch, then restart ', code('lanes hub'), '.'),
+      el('pre', { text: '[pull_requests]\nowners = ["your-user", "your-org"]\n# refresh_s = 45\n# token_command = "gh auth token"' }),
+      el('p', { text: 'The hub reads your GitHub token itself, so the token never reaches this page. Open pull requests then show up here with their proof videos, screenshots and checks.' }));
+  }
+
+  function applyPrs(data) {
+    prs = data;
+    prsSig = JSON.stringify([data.configured, data.error, data.prs]);
+    pendingPrs = null;
+    ui.pending.hidden = true;
+    const list = data.prs || [];
+    manyAuthors = new Set(list.filter((p) => !p.is_bot).map((p) => p.author)).size > 1;
+    const next = new Map();
+    for (const p of list) {
+      const sig = JSON.stringify([p, manyAuthors]), old = cards.get(p.id);
+      next.set(p.id, old && old.sig === sig ? old : buildCard(p, sig, old));
+    }
+    for (const id of [...opens.keys()]) if (!next.has(id)) opens.delete(id);
+    cards = next;
+    layoutPrs();
+    render();
+  }
+
+  function layoutPrs() {
+    if (!prs) return;
+    const has = prs.configured && cards.size > 0;
+    ui.prHead.hidden = ui.prGrid.hidden = !has;
+    ui.prBlank.hidden = has;
+    ui.prNote.hidden = !(prs.configured && prs.error);
+    ui.prNote.textContent = prs.error ? `GitHub: ${prs.error}` : '';
+    if (!has) {
+      scopeCount = prs.configured ? 0 : null;
+      ui.prBlank.replaceChildren(prs.configured
+        ? el('div', { class: 'card emptycard' }, el('h2', { text: 'No open pull requests' }),
+            el('p', { text: (prs.owners || []).length ? `Nothing is open across ${prs.owners.join(', ')} right now.` : 'Nothing is open right now.' }))
+        : prSetupCard());
+      return;
+    }
+    const all = [...cards.values()];
+    const bots = all.filter((r) => r.pr.is_bot).length;
+    const scope = all.filter((r) => !(pv.hideBots && r.pr.is_bot));
+    if (pv.repo && !scope.some((r) => r.pr.repo === pv.repo)) pv.repo = null;
+    const inRepo = scope.filter((r) => !pv.repo || r.pr.repo === pv.repo);
+    const inView = inRepo.filter((r) => VIEWS.find(([key]) => key === pv.view)[2](r.pr));
+    const terms = pv.q.toLowerCase().split(/\s+/).filter(Boolean);
+    const shown = inView.filter((r) => terms.every((t) => r.hay.includes(t)));
+    scopeCount = scope.length;
+
+    const perRepo = new Map(), shorts = new Map();
+    for (const r of scope) perRepo.set(r.pr.repo, [...(perRepo.get(r.pr.repo) || []), r]);
+    for (const repo of perRepo.keys()) shorts.set(short(repo), (shorts.get(short(repo)) || 0) + 1);
+    const repoLabel = (repo) => (shorts.get(short(repo)) > 1 ? repo : short(repo));
+    const byRank = (a, b) => perRepo.get(b[0]).length - perRepo.get(a[0]).length || a[0].localeCompare(b[0]);
+    const repos = [...perRepo].sort(byRank);
+
+    // The rail: every repository with its count, a red dot where something is failing, a play mark where there is proof.
+    const repoRow = (repo, label, recs) => {
+      const bad = recs.filter((r) => failing(r.pr)).length, proof = recs.filter((r) => r.pr.has_proof).length;
+      const b = el('button', { class: 'repo', type: 'button', 'aria-pressed': String(pv.repo === repo), 'data-k': `repo:${repo || ''}`,
+        title: repo ? [repo, proof ? `${proof} with proof` : null, bad ? `${bad} failing` : null].filter(Boolean).join(' · ') : null },
+        el('span', { class: 'nm', text: label }),
+        el('i', { class: `mk ${!repo || !proof ? 'off' : recs.some((r) => r.pr.has_video) ? 'vid' : 'pic'}` }),
+        el('i', { class: `mk${repo && bad ? '' : ' off'}` }),
+        el('span', { class: 'ct', text: recs.length }));
+      b.addEventListener('click', () => { pv.repo = repo; layoutPrs(); });
+      return el('li', {}, b);
+    };
+
+    // A sheet is one surface of entries. Past `limit` the rest wait behind one quiet button.
+    const sheet = (recs, key, limit) => {
+      const cut = recs.length > limit + 1 && !pv.more.has(key) ? limit : recs.length;
+      const box = el('div', { class: 'sheet' }, ...recs.slice(0, cut).map((r) => r.node));
+      if (cut < recs.length) {
+        const more = el('button', { class: 'more', type: 'button', 'data-k': `more:${key}`, text: `Show ${recs.length - cut} more` });
+        more.addEventListener('click', () => { pv.more.add(key); layoutPrs(); });
+        box.append(more);
+      }
+      return box;
+    };
+    const proofFirst = (recs) => [...recs.filter((r) => r.pr.has_proof), ...recs.filter((r) => !r.pr.has_proof)];
+    const feed = () => {
+      if (!shown.length) {
+        const [title, text] = !scope.length ? ['Only bot pull requests are open', `Turn off Hide bot PRs to see the ${plural(bots, 'pull request')} opened by bots.`]
+          : terms.length ? ['No pull requests match', `Nothing here matches “${pv.q.trim()}”.`]
+          : pv.view === 'proof' ? ['No proof yet', 'No open pull request here has a proof video or a screenshot.']
+          : pv.view === 'ready' ? ['Nothing is ready to merge', 'No open pull request here has passing checks and a clear review.']
+          : pv.view === 'failing' ? ['Nothing is failing', 'No open pull request here has failing checks or merge conflicts.']
+          : ['No pull requests here', 'This repository has nothing open.'];
+        const clear = el('button', { class: 'btn', type: 'button', 'data-k': 'clear', text: 'Show all pull requests' });
+        clear.addEventListener('click', clearFilters);
+        return [el('div', { class: 'card emptycard' }, el('h2', { text: title }), el('p', { text }), scope.length ? clear : null)];
+      }
+      if (pv.mode === 'list') return [sheet(proofFirst(shown), 'feed', 20)];
+      if (pv.repo) return [sheet(proofFirst(shown), `repo:${pv.repo}`, 20)];
+      const groups = new Map();
+      for (const r of shown) groups.set(r.pr.repo, [...(groups.get(r.pr.repo) || []), r]);
+      const withProof = ([, recs]) => recs.some((r) => r.pr.has_proof);
+      return [...groups].sort((a, b) => withProof(b) - withProof(a) || byRank(a, b)).map(([repo, recs]) => {
+        const isOpen = !pv.collapsed.has(repo);
+        const proof = recs.filter((r) => r.pr.has_proof).length, bad = recs.filter((r) => failing(r.pr)).length;
+        const head = el('button', { class: 'grp-h', type: 'button', 'aria-expanded': String(isOpen), 'data-k': `grp:${repo}`, title: repo },
+          icon('chev'), el('b', { text: repoLabel(repo) }),
+          el('span', {}, ...dotted([`${recs.length} open`, proof ? `${proof} with proof` : null, bad ? el('span', { class: 'bad-t', text: `${bad} failing` }) : null])));
+        head.addEventListener('click', () => { isOpen ? pv.collapsed.add(repo) : pv.collapsed.delete(repo); savePv(); layoutPrs(); });
+        return el('section', { class: 'grp' }, head, isOpen ? sheet(proofFirst(recs), `grp:${repo}`, 6) : null);
+      });
+    };
+
+    const playing = [...ui.prList.querySelectorAll('video')].filter(isPlaying);
+    keepFocus(ui.views.prs, () => {
+      ui.prTitle.textContent = plural(scope.length, 'open pull request');
+      ui.prSay.replaceChildren(...dotted([
+        el('span', {}, 'across ', el('b', { text: repos.length }), repos.length === 1 ? ' repo' : ' repos'),
+        el('span', {}, el('b', { text: scope.filter((r) => r.pr.has_proof).length }), ' with proof'),
+        el('span', {}, el('b', { text: scope.filter((r) => r.pr.merge_ready).length }), ' ready to merge'),
+        bots ? (pv.hideBots ? `${plural(bots, 'bot PR')} hidden` : `${bots} from bots`) : null]));
+      ui.repoList.replaceChildren(repoRow(null, 'All repositories', scope), ...repos.map(([repo, recs]) => repoRow(repo, repoLabel(repo), recs)));
+      ui.repoSelect.replaceChildren(el('option', { value: '', text: `All repositories (${scope.length})` }),
+        ...repos.map(([repo, recs]) => el('option', { value: repo, text: `${repoLabel(repo)} (${recs.length})` })));
+      ui.repoSelect.value = pv.repo || '';
+      for (const b of ui.bots) { b.label.hidden = !bots; b.box.checked = pv.hideBots; b.count.textContent = bots; }
+      ui.vtabs.replaceChildren(...VIEWS.map(([key, label, test]) => {
+        const b = el('button', { class: 'vtab', type: 'button', 'aria-pressed': String(pv.view === key), 'data-k': `view:${key}` }, label,
+          el('span', { class: 'n', text: inRepo.filter((r) => test(r.pr)).length }));
+        b.addEventListener('click', () => { pv.view = key; layoutPrs(); });
+        return b;
+      }));
+      ui.match.hidden = !terms.length || !shown.length;
+      if (!ui.match.hidden) {
+        const clear = el('button', { class: 'linkish', type: 'button', 'data-k': 'unsearch', text: 'Clear search' });
+        clear.addEventListener('click', () => { pv.q = ''; ui.search.value = ''; layoutPrs(); });
+        ui.match.replaceChildren(el('span', { text: `${shown.length} of ${inView.length} match “${pv.q.trim()}”` }), clear);
+      }
+      ui.prList.className = `pr-list${pv.mode === 'list' && !pv.repo ? ' mixed' : ''}`;
+      ui.prList.replaceChildren(...feed());
+    });
+    // An entry that was only moved keeps playing; one that left the page stops.
+    for (const video of playing) { if (!video.isConnected) video.pause(); else if (video.paused) video.play().catch(() => {}); }
+    tickTimes();
+  }
+
+  function tickTimes() {
+    const now = Date.now() / 1000;
+    for (const t of document.querySelectorAll('time[data-ts]')) t.textContent = `${age(now - t.dataset.ts)} ago`;
+    ui.stamp.textContent = prsProblem || (prs && prs.updated ? (now - prs.updated < 10 ? 'PR data from just now' : `PR data from ${age(now - prs.updated)} ago`) : '');
+    ui.stamp.classList.toggle('bad', !!prsProblem);
+  }
+
+  async function refreshPrs(manual) {
+    let data;
+    ui.refresh.classList.add('busy');
+    try {
+      const response = await fetch('prs.json', { cache: 'no-store' });
+      if (!response.ok) throw new Error(response.status);
+      data = await response.json();
+      prsProblem = null;
+    } catch {
+      prsProblem = "Can't load pull requests from the hub";
+      if (!prs) ui.prBlank.replaceChildren(el('div', { class: 'problem' }, el('b', { text: prsProblem }), 'Is `lanes hub` running? This retries every 30 seconds.'));
+      tickTimes();
+      return;
+    } finally {
+      ui.refresh.classList.remove('busy');
+    }
+    if (prs && JSON.stringify([data.configured, data.error, data.prs]) === prsSig) {      // nothing new: only the clock moved
+      prs.updated = data.updated;
+      pendingPrs = null;
+      ui.pending.hidden = true;
+      tickTimes();
+    } else if (prs && manual !== true && prBusy()) {      // a video is playing or a search is being typed: wait to be asked
+      pendingPrs = data;
+      ui.pending.hidden = false;
+    } else {
+      applyPrs(data);
+    }
+  }
+
+  // ---- the screenshot viewer: click a thumbnail to open it, click the image for full size, Esc or the backdrop closes
+  function openLightbox(items, at, opener) {
+    const img = el('img', { alt: '' });
+    const label = el('span'), count = el('span', { class: 'n' });
+    const source = el('a', { target: '_blank', rel: 'noopener noreferrer', text: 'Open source' });
+    const stage = el('div', { class: 'lb-stage' }, img);
+    const button = (cls, ic, name, act) => {
+      const b = el('button', { class: `lb-btn ${cls}`, type: 'button', 'aria-label': name, title: name }, icon(ic));
+      b.addEventListener('click', act);
+      return b;
+    };
+    const show = () => {
+      const m = items[lb.at], original = safe(m.original_url);
+      node.classList.remove('actual');
+      img.src = mediaSrc(m.src);
+      img.alt = m.label || 'Screenshot';
+      label.textContent = m.label || 'Screenshot';
+      count.textContent = items.length > 1 ? `${lb.at + 1} of ${items.length}` : '';
+      source.hidden = !original;
+      if (original) source.href = original; else source.removeAttribute('href');
+    };
+    const go = (step) => { lb.at = (lb.at + step + items.length) % items.length; show(); };
+    const node = el('div', { class: 'lb', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Screenshot viewer' },
+      stage, el('div', { class: 'lb-bar' }, label, count, source),
+      button('lb-x', 'x', 'Close', closeLightbox),
+      items.length > 1 ? button('lb-prev', 'left', 'Previous image', () => go(-1)) : null,
+      items.length > 1 ? button('lb-next', 'right', 'Next image', () => go(1)) : null);
+    stage.addEventListener('click', (ev) => { if (ev.target === img) node.classList.toggle('actual'); else closeLightbox(); });
+    lb = { node, opener, at, go, many: items.length > 1 };
+    document.body.append(node);
+    document.documentElement.style.overflow = 'hidden';
+    show();
+    node.querySelector('.lb-x').focus();
+  }
+
+  function closeLightbox() {
+    if (!lb) return;
+    lb.node.remove();
+    document.documentElement.style.overflow = '';
+    if (lb.opener && lb.opener.isConnected) lb.opener.focus();
+    lb = null;
+  }
+
+  function lightboxKey(ev) {
+    if (ev.key === 'Escape') { ev.preventDefault(); closeLightbox(); }
+    else if (lb.many && ev.key === 'ArrowLeft') lb.go(-1);
+    else if (lb.many && ev.key === 'ArrowRight') lb.go(1);
+    else if (ev.key === 'Tab') {                 // keep the keyboard inside the viewer
+      const stops = [...lb.node.querySelectorAll('button, a[href]')];
+      ev.preventDefault();
+      stops[(stops.indexOf(document.activeElement) + (ev.shiftKey ? -1 : 1) + stops.length) % stops.length].focus();
+    }
+  }
+
+  // ---- live CI and queue: is it alive and what is it doing, then the runners and their room beside what is waiting
+  // and what just finished, then the history and hardware charts. Runner capacity shows when the hub reads a queue.
+  const STATES = {
+    QUEUED: ['Waiting', 'In the line, waiting for a runner with room.'],
+    CLAIMED: ['Claimed', 'Locked to one runner, so no other runner can start it.'],
+    PROVISIONING: ['Starting', 'Its container or virtual machine is booting.'],
+    RUNNING: ['Running', 'GitHub has confirmed the job is running.'],
+    TEARING_DOWN: ['Cleaning up', 'The work is over and its machine is being wiped.'],
+    DONE: ['Done', 'Finished and cleaned up.'],
+    FAILED: ['Failed', 'Ended with a failure.'],
+    CANCELLED: ['Cancelled', 'Stopped before it finished.'],
+    LOST: ['Lost', 'Its runner went quiet. The queue notices and puts the job back in line by itself.'],
+  };
+  const EVENTS = {
+    claim: 'A runner takes the job.',
+    start_external: 'A runner outside the queue starts it.',
+    provision: 'The runner starts booting its machine.',
+    start: 'GitHub confirms it is running.',
+    release: 'The runner hands it back to the line.',
+    teardown: 'The work ends and cleanup begins.',
+    complete: 'It finishes.',
+    fail: 'It fails.',
+    cancel: 'Someone cancels it.',
+    lease_expired: 'The runner stopped checking in.',
+    provision_failed: 'Its machine did not boot.',
+    host_lost: 'The runner went offline.',
+    requeue: 'The queue puts it back in line.',
+  };
+  const pretty = (s) => String(s || '').toLowerCase().replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+  const stateName = (s) => (STATES[s] ? STATES[s][0] : pretty(s));
+  const LANES = { fast: ['Fast <1s', 'fast'], vm: ['Full VM', 'vm'] };
+  const isCloud = (w) => w.boat_day_left != null || w.boat_hour_left != null;      // the queue's cloud runner reports its start allowance
+  const hasLane = (w, lane) => (w.lanes || []).some((l) => String(l).toLowerCase() === lane);
+  const ciUi = { allQueued: false };
+
+  function runnerRow(w) {
+    const cloud = isCloud(w), word = !w.online ? 'Offline' : w.paused_reason ? 'Paused' : w.draining ? 'Draining' : null;
+    const gb = (free, whole, what) => `${n1(free)}${typeof whole === 'number' && whole > 0 ? ` of ${n1(whole)}` : ''} GB ${what} free`;
+    const bar = (share, text) => el('div', { class: 'rn-bar' }, meter(share, 'var(--ink-2)', text), el('span', { text }));
+    const row = el('div', { class: 'rn' }, el('div', { class: 'rn-h' },
+      el('i', { class: `lamp${!w.online ? ' bad' : word ? ' warn' : ''}` }), el('b', { text: w.worker_id }),
+      el('span', { text: (w.lanes || []).map((l) => laneOf(l, true)).join(' · ') }),
+      el('span', { text: [word, plural(w.running_jobs || 0, 'job')].filter(Boolean).join(' · ') })));
+    if (cloud && w.max_concurrent > 0) row.append(bar(w.running_jobs / w.max_concurrent, `${w.running_jobs} of ${w.max_concurrent} cloud machines in use`));
+    else if (w.max_cpus > 0 && typeof w.free_cpus === 'number') row.append(bar(Math.max(0, w.max_cpus - w.free_cpus) / w.max_cpus, `${n1(w.free_cpus)} of ${w.max_cpus} CPUs free`));
+    const facts = [];
+    if (cloud) {
+      if (w.boat_day_left != null) facts.push(`${w.boat_day_left} starts left today`);
+      if (w.boat_hour_left != null) facts.push(`${w.boat_hour_left} this hour`);
+    } else {
+      if (typeof w.free_mem_gib === 'number') facts.push(gb(w.free_mem_gib, w.empty_mem_gib, 'memory'));
+      if (typeof w.free_disk_gib === 'number') facts.push(gb(w.free_disk_gib, w.empty_disk_gib, 'disk'));
+      if (typeof w.temp_c === 'number') {
+        const hot = typeof w.max_temp_c === 'number' && w.temp_c >= w.max_temp_c;
+        facts.push(el('span', { class: hot ? 'hot' : null, text: `${hot ? '▲ ' : ''}${n1(w.temp_c)} °C`,
+          title: typeof w.max_temp_c === 'number' ? `Pauses at ${w.max_temp_c} °C` : null }));
+      }
+      if (typeof w.load_1m === 'number') facts.push(`load ${w.load_1m}`);
+      if (w.primary_local) facts.push('first pick');
+    }
+    if (facts.length) row.append(el('p', { class: 'rn-facts' }, ...dotted(facts)));
+    const note = w.paused_reason ? `Paused: ${w.paused_reason.replace(/^paused:?\s*/i, '')}`
+      : w.draining ? 'Finishing its current jobs and taking no new ones.'
+      : !w.online && typeof w.age_s === 'number' ? `Last heard from ${dur(w.age_s)} ago.` : null;
+    if (note) row.append(el('p', { class: 'rn-note', text: note }));
+    return row;
+  }
+
+  // Without a queue there are no runners to describe, so each machine stands in: is it answering, and how busy.
+  function machineRow(m) {
+    const row = el('div', { class: 'rn' }, el('div', { class: 'rn-h' }, el('i', { class: `lamp${m.ok ? '' : ' bad'}` }), el('b', { text: m.name }),
+      el('span', { text: m.draining ? 'draining' : '' }), el('span', { text: m.ok ? plural(m.jobs.length, 'job') : 'Not answering' })));
+    if (!m.ok) { row.append(el('p', { class: 'rn-note', text: m.error || 'no answer' })); return row; }
+    if (m.cpu != null) row.append(el('div', { class: 'rn-bar' }, meter(m.cpu / 100, 'var(--ink-2)', 'CPU in use'), el('span', { text: `${Math.round(m.cpu)}% CPU in use` })));
+    const heat = heatOf(m);
+    const facts = [m.memFreeGiB != null ? `${n1(m.memFreeGiB)}${m.memGiB ? ` of ${n1(m.memGiB)}` : ''} GB memory free` : null,
+      heat != null ? el('span', { class: m.hot ? 'hot' : null, text: `${m.hot ? '▲ ' : ''}${Math.round(heat)} °C` }) : null];
+    if (facts.some((f) => f != null)) row.append(el('p', { class: 'rn-facts' }, ...dotted(facts)));
+    return row;
+  }
+
+  function waitingPanel(queued) {
+    const limit = ciUi.allQueued ? queued.length : 8;
+    const card = el('section', { class: 'card' },
+      blockHead('Waiting in line', `${plural(queued.length, 'job')}, longest wait ${waitFmt(Math.max(...queued.map((j) => j.waited_s || 0)))}`),
+      ...waitRows(queued.slice(0, limit), true));
+    if (queued.length > limit) {
+      const more = el('button', { class: 'more', type: 'button', 'data-k': 'queue-more', text: `Show all ${queued.length} waiting jobs` });
+      more.addEventListener('click', () => { ciUi.allQueued = true; render(); });
+      card.append(more);
+    }
+    return card;
+  }
+
+  // The banner nobody can misread: jobs running and waiting with the running ones right under it, or all caught up
+  // with who is online and the job that finished last.
+  let allLive = false;                          // the banner lists every running job once asked
+  function ciHero(p, now) {
+    const f = p.fleet, last = p.last;
+    const counts = [`${plural(p.live.length, 'job')} running`, status.queue ? `${p.queued.length} waiting in queue` : null].filter(Boolean);
+    const title = problem ? ["Can't reach the Lanes hub"]
+      : p.active ? counts.flatMap((part, i) => [i ? ' ' : null, el('span', { class: 'nb', text: i < counts.length - 1 ? `${part} ·` : part })])
+      : [f.total && !f.online ? `No ${f.word} is online` : 'All caught up — CI is online and waiting for new jobs'];
+    const sub = problem ? [`Showing what the hub last said, at ${clock.format(status.updated * 1000)}`] : [
+      `${f.online} of ${plural(f.total, f.word)} online`,
+      last ? el('span', {}, `Last job finished ${age(now - last.finished)} ago (`, el('b', { text: short(last.repo) }), ` · ${last.job} `,
+          el('span', { class: last.result === 'failure' ? 'bad-t' : null, text: resultWord(last.result) }), `${last.machine ? ` on ${last.machine}` : ''})`)
+        : 'No job has finished in the last 6 hours'];
+    const cut = p.live.length > 9 && !allLive ? 8 : p.live.length;
+    const more = cut < p.live.length ? el('button', { class: 'hero-more', type: 'button', 'data-k': 'live-more', text: `Show ${p.live.length - cut} more running` }) : null;
+    if (more) more.addEventListener('click', () => { allLive = true; renderCi(); });
+    return el('section', { class: `hero ${p.tone}` }, el('div', { class: 'hero-h' },
+      !p.active && p.tone === 'good' ? icon('check') : el('i', { class: `lamp on ${p.tone}` }),
+      el('div', {}, el('h1', {}, ...title), el('p', { class: 'hero-sub' }, ...dotted(sub)),
+        ...p.warn.map((text) => el('p', { class: 'hero-alert', text })),
+        p.live.length ? el('div', { class: 'hero-jobs' }, ...liveRows(p.live.slice(0, cut), now, true), more) : null)));
+  }
+
+  // One queue job as a row: who, where it is in its life, and for how long.
+  function jobRow(j, now) {
+    const since = j.started_at || j.claimed_at;
+    const lane = (LANES[String(j.claimed_lane || '').toLowerCase()] || [j.claimed_lane])[0];
+    const where = [j.claimed_by ? `on ${j.claimed_by}` : null, lane, j.size_name ? `size ${j.size_name}` : null, j.is_release ? 'release' : null].filter(Boolean);
+    return el(safe(j.url) ? 'a' : 'div', { class: 'aj', href: safe(j.url), target: '_blank', rel: 'noopener noreferrer' },
+      el('span', { class: 'dot', style: { background: names.includes(j.claimed_by) ? color(j.claimed_by) : 'var(--gone)' } }),
+      el('div', { class: 'what' }, el('b', { text: short(j.repo) }), el('span', { text: `  ${j.job_name || 'job'}` })),
+      el('div', { class: 'at' }, el('b', { text: stateName(j.state) }),
+        j.state === 'QUEUED' && j.waited_s != null ? ` ${waitFmt(j.waited_s)}` : since && !j.finished_at ? ` ${dur(now - since)}` : ''),
+      where.length ? el('div', { class: 'sub', text: where.join(', ') }) : null);
+  }
+
+  function renderCi() {
+    const view = ui.views.ci;
+    if (!status) { view.className = 'view'; view.replaceChildren(hubProblem()); return; }
+    const now = Date.now() / 1000, q = status.queue, p = pulse();
+    const workers = (q && q.workers) || [];
+    chartW = view.clientWidth - (narrow() ? 30 : 42);        // a card's inner width
+    const all = intervals(now);
+    const kids = [
+      ciHero(p, now),
+      el('div', { class: 'duo' },
+        el('section', { class: 'card' }, blockHead(workers.length ? 'Runners and capacity' : 'Machines', `${p.fleet.online} of ${p.fleet.total} online`),
+          ...(workers.length ? workers.map(runnerRow) : real().map(machineRow)),
+          q ? null : el('p', { class: 'note rn-tip' }, 'To see runner capacity and why each job is waiting, add a ', code('[queue]'), ' section to ', code('hub.toml'), '.')),
+        el('div', { class: 'stack' }, p.queued.length ? waitingPanel(p.queued) : null,
+          el('section', { class: 'card' }, blockHead('Recently finished', p.done.length ? `last 6 hours: ${tallyText(p.done)}` : null),
+            ...(p.done.length ? doneRows(p.done.slice(0, 8), now, true) : [el('div', { class: 'empty', text: 'No job has finished in the last 6 hours.' })])))),
+      el('div', { class: 'sect' }, el('h2', { text: 'History and hardware' }), el('span', { text: 'what ran in the last 6 hours, and what each whole machine is doing' })),
+      el('section', { class: 'card' }, el('div', { class: 'blk-h' }, el('h2', { text: 'Jobs at once' }),
+        el('div', { class: 'legend' }, ...names.map((m) => el('span', { class: 'key' }, el('span', { class: 'dot', style: { background: color(m) } }), m))),
+        el('span', { style: { marginLeft: 0 }, text: 'last 6 hours' })), concurrency(now, all)),
+      el('section', { class: 'card' }, blockHead('Last hour', 'bright: running · faded: passed · red: failed'), timeline(now, all)),
+      el('section', { class: 'card' }, blockHead('Finished', 'last 6 hours, oldest first'), results()),
+      el('section', { class: 'card' }, blockHead('Machines', 'whole machine, CI or not · lines: last 2 hours'), machineRows()),
+    ];
+    keepFocus(view, () => { view.className = 'view stack'; view.replaceChildren(...kids.filter(Boolean)); });
+  }
+
+  // ---- how CI works: the path of one job as four steps, with the live runners in each lane and the queue's own
+  // state machine. Click a state to see where a job can go from it and which jobs are in it.
+  const wire = (d) => el('svg:path', { class: 'wire', d });
+  const flLink = (label, cls) => el('div', { class: `fl-link${cls ? ` ${cls}` : ''}`, 'aria-hidden': 'true' },
+    el('svg:svg', { width: 24, height: 40, viewBox: '0 0 24 40' }, wire('M12 3v32'), wire('M7 30l5 6 5-6')), label ? el('span', { text: label }) : null);
+  const THIRDS = ['16.1%', '50%', '83.9%'];
+  function flBranch(split) {
+    const svg = el('svg:svg', { class: 'fl-branch', 'aria-hidden': 'true' });
+    const line = (x1, y1, x2, y2) => svg.append(el('svg:line', { class: 'wire', x1, y1, x2, y2 }));
+    const head = (x) => svg.append(el('svg:svg', { x, y: 41, overflow: 'visible' }, wire('M-5 -6L0 0L5 -6')));
+    if (split) {
+      line('50%', 1, '50%', 18);
+      line(THIRDS[0], 18, THIRDS[2], 18);
+      for (const x of THIRDS) { line(x, 18, x, 40); head(x); }
+    } else {
+      for (const x of THIRDS) line(x, 3, x, 20);
+      line(THIRDS[0], 20, THIRDS[2], 20);
+      line('50%', 20, '50%', 40);
+      head('50%');
+    }
+    return svg;
+  }
+  const stepHead = (n, title, text, where) => el('div', { class: 'node-h' }, el('span', { class: 'step', text: n }),
+    el('div', { class: 'node-t' }, el('h3', { text: title }), el('p', { text })), where ? el('span', { class: 'where', text: where }) : null);
+
+  function laneCard(cls, title, big, bigSub, text, workers, describe, none) {
+    const body = el('div', { class: 'fl-lane-body' }, el('p', { text }));
+    if (workers && workers.length) body.append(el('dl', { class: 'mini-dl' }, ...workers.map((w) => el('div', {}, el('dt', { text: w.worker_id }), el('dd', { text: describe(w) })))));
+    else body.append(el('p', { class: 'fine', text: none }));
+    return el('article', { class: 'card' }, el('div', { class: 'fl-lane-top' }, el('i', { class: `lg ${cls}` }), el('h3', { text: title })),
+      el('p', { class: 'fl-big', text: big }), el('p', { class: 'fl-big-sub', text: bigSub }), body);
+  }
+
+  let smSel = null;
+  let flowSig = '';
+  const smWatch = 'ResizeObserver' in window ? new ResizeObserver(() => { if (smWatch.draw) smWatch.draw(); }) : null;
+
+  function stateMachine(q) {
+    const sm = q.state_machine || {}, states = sm.states || [], ends = new Set(sm.terminal || []);
+    const counts = q.counts || {};
+    if (!states.includes(smSel)) smSel = states.find((s) => counts[s] > 0 && !ends.has(s)) || states[0];
+    const next = (sm.transitions || {})[smSel] || {};                 // event -> the state it leads to
+    const via = new Map();
+    for (const [ev, to] of Object.entries(next)) via.set(to, [...(via.get(to) || []), ev]);
+    const pick = (s) => { smSel = s; flowSig = ''; render(); };
+    const rowsOf = [states.filter((s) => !ends.has(s)), states.filter((s) => ends.has(s))].filter((r) => r.length);
+    const cols = Math.max(1, ...rowsOf.map((r) => r.length));
+    const nodes = new Map();
+    const rows = rowsOf.map((row) => el('div', { class: 'sm-row', style: `--n:${cols}` }, ...row.map((s, i) => {
+      const n = counts[s] || 0, evs = via.get(s);
+      const b = el('button', { class: `sm-node${ends.has(s) ? ' end' : ''}${s === smSel ? ' sel' : evs ? ' to' : ' dim'}`, type: 'button', 'aria-pressed': String(s === smSel), 'data-k': `sm:${s}`,
+        title: (STATES[s] || [])[1] || null, style: i === 0 && row.length < cols ? `grid-column-start:${Math.floor((cols - row.length) / 2) + 1}` : null },
+        el('span', { class: 'sm-top' }, el('span', { class: `n${n ? '' : ' zero'}`, text: n }),
+          evs ? el('span', { class: 'sm-ev', text: evs.join(', '), title: `from ${smSel}: ${evs.join(', ')}` }) : null),
+        el('span', { class: 'nm', text: stateName(s) }), el('span', { class: 'cd', text: s }));
+      b.addEventListener('click', () => pick(s));
+      nodes.set(s, b);
+      return b;
+    })));
+    const wires = el('svg:svg', { class: 'sm-wires', 'aria-hidden': 'true' });
+    const box = el('div', { class: 'sm' }, ...rows, wires);
+
+    // Arrows from the picked state to each state it can lead to, measured from where the nodes really sit.
+    const draw = () => {
+      wires.replaceChildren();
+      const base = box.getBoundingClientRect();
+      if (!base.width || narrow() || !nodes.has(smSel)) return;
+      const at = (s) => { const r = nodes.get(s).getBoundingClientRect(); return { t: r.top - base.top, b: r.bottom - base.top, cx: (r.left + r.right) / 2 - base.left }; };
+      const from = at(smSel);
+      const firstRow = Math.min(...[...nodes.keys()].map((s) => at(s).t));
+      const targets = [...via.keys()].filter((s) => nodes.has(s) && s !== smSel).map(at);
+      const across = targets.filter((t) => Math.abs(t.t - from.t) >= 8);
+      wires.append(el('svg:defs', {}, el('svg:marker', { id: 'sm-head', viewBox: '0 0 10 10', refX: 8.5, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' },
+        el('svg:path', { d: 'M1.5 1.5L8.5 5L1.5 8.5' }))));
+      for (const t of targets) {
+        let d;
+        if (Math.abs(t.t - from.t) < 8) {            // same row: over the top of the first row, under the bottom of a later one
+          const up = from.t - firstRow < 8, dir = Math.sign(t.cx - from.cx), y = up ? from.t : from.b, out = up ? -1 : 1;
+          const x1 = from.cx + dir * 14, x2 = t.cx - dir * 14, h = Math.min(36, 16 + Math.abs(x2 - x1) / 26);
+          d = `M${x1},${y} C${x1},${y + out * h} ${x2},${y + out * h} ${x2},${y + out * 3}`;
+        } else {
+          const down = t.t > from.t, y1 = down ? from.b : from.t, y2 = down ? t.t - 3 : t.b + 3;
+          const x1 = from.cx + (across.indexOf(t) - (across.length - 1) / 2) * 14, mid = (y1 + y2) / 2;
+          d = `M${x1},${y1} C${x1},${mid} ${t.cx},${mid} ${t.cx},${y2}`;
+        }
+        wires.append(el('svg:path', { d, 'marker-end': 'url(#sm-head)' }));
+      }
+    };
+
+    const here = [...(q.queued || []), ...(q.running || []), ...(q.recent || [])].filter((j) => j.state === smSel);
+    const moves = el('ul', { class: 'sm-t' });
+    for (const [ev, to] of Object.entries(next)) {
+      const go = el('button', { class: 'linkish', type: 'button', 'data-k': `go:${ev}`, text: stateName(to), title: `Show ${to}` });
+      go.addEventListener('click', () => pick(to));
+      moves.append(el('li', {}, code(ev), go, el('span', { text: EVENTS[ev] || '' })));
+    }
+    const now = Date.now() / 1000;
+    const detail = el('div', { class: 'sm-d' },
+      el('div', {}, el('h4', {}, stateName(smSel), code(smSel)), el('p', { text: (STATES[smSel] || [])[1] || '' }),
+        ...(moves.children.length ? [el('h5', { text: 'What can happen next' }), moves] : [el('p', { text: 'This is an end state. Nothing comes after it.' })])),
+      el('div', {}, el('h5', { text: ends.has(smSel) ? `Latest jobs that ended here (${here.length})` : `Jobs here right now (${here.length})` }),
+        ...(here.length ? here.slice(0, 8).map((j) => jobRow(j, now)) : [el('p', { text: 'No job is in this state.' })]),
+        here.length > 8 ? el('p', { text: `and ${here.length - 8} more` }) : null));
+    return { node: el('div', {}, box, detail), box, draw };
+  }
+
+  function renderFlow() {
+    const view = ui.views.flow, q = status ? status.queue : null;
+    const sig = JSON.stringify([innerWidth, smSel, q && [q.ok, q.error, q.counts, q.state_machine,
+      (q.workers || []).map((w) => [w.worker_id, w.online, w.lanes, w.free_cpus, w.max_cpus, w.running_jobs, w.max_concurrent, w.paused_reason, w.draining, w.primary_local, w.boat_day_left]),
+      [...(q.queued || []), ...(q.running || []), ...(q.recent || [])].map((j) => [j.job_id, j.state, j.is_release, j.claimed_by])]]);
+    if (sig === flowSig) return;
+    const workers = q ? q.workers || [] : null, online = workers ? workers.filter((w) => w.online) : [];
+    const fast = online.filter((w) => hasLane(w, 'fast'));
+    const local = online.filter((w) => !isCloud(w) && (w.lanes || []).some((l) => String(l).toLowerCase() !== 'fast'));
+    const cloud = online.filter(isCloud);
+    const queued = q ? q.queued || [] : [];
+    const releases = queued.filter((j) => j.is_release).length;
+    const room = (w) => (typeof w.free_cpus === 'number' && w.max_cpus ? `${n1(w.free_cpus)} of ${w.max_cpus} CPUs free` : plural(w.running_jobs || 0, 'job'));
+    const held = (w) => (w.paused_reason ? ' Paused.' : w.draining ? ' Draining.' : '');
+
+    // The line itself: one dot per waiting job, release jobs ringed at the front.
+    const dots = q
+      ? [...queued].sort((a, b) => Number(b.is_release) - Number(a.is_release)).slice(0, 18).map((j) => el('i', { class: j.is_release ? 'rel' : null }))
+      : [el('i', { class: 'rel' }), el('i', { class: 'rel' }), el('i'), el('i'), el('i'), el('i'), el('i', { class: 'f1' }), el('i', { class: 'f2' }), el('i', { class: 'f3' })];
+    const lineviz = el('div', { class: 'lineviz', role: 'img', 'aria-label': q ? `${plural(queued.length, 'job')} waiting, ${releases} of them release jobs` : 'Release jobs wait at the front of the line' },
+      el('div', { class: 'lv-row' }, el('svg:svg', { width: 14, height: 12, viewBox: '0 0 14 12' }, wire('M13 6H2M6 2L2 6l4 4')), ...dots, el('span', { class: 'tail' })),
+      el('div', { class: 'lv-caps' },
+        q ? el('span', {}, el('b', { text: queued.length }), queued.length === 1 ? ' job waiting right now' : ' jobs waiting right now', releases ? `, ${releases} at the front for a release` : '')
+          : el('span', { text: 'Front of the line: release and merge-train jobs' }),
+        el('span', { text: 'New jobs join at the back' })));
+    const fact = (ic, title, text) => el('div', {}, el('h4', {}, icon(ic), title), el('p', { text }));
+
+    const machine = q && (q.state_machine || {}).states ? stateMachine(q) : null;
+    const life = (cls, name, text) => el('li', { class: cls || null }, el('b', { text: name }), el('span', { text }));
+    const kids = [
+      el('div', { class: 'fl-intro' }, el('h1', { text: 'From push to green check' }),
+        el('p', { text: 'Every job from every repo waits in one line. The line decides where each job runs, then watches it until it finishes.' })),
+      el('div', { class: 'flow' },
+        el('div', { class: 'card' }, stepHead(1, 'You push code or open a pull request', 'GitHub sends an instant notice that there is a job to run.', 'GitHub'),
+          el('p', { class: 'tech' }, 'Under the hood, the notice is a ', code('workflow_job'), ' event, sent for every push and pull request.')),
+        flLink('instant notice'),
+        el('div', { class: 'card hub' }, stepHead(2, 'One global queue', 'The single source of truth. Every job waits here, and each runner asks the line for its next job.', 'The queue'),
+          lineviz,
+          el('div', { class: 'facts3' },
+            fact('clock', 'It remembers', 'How much CPU, memory and time each job took last time, so it knows what fits where.'),
+            fact('up', 'Release jobs go first', 'Release and merge-train jobs move to the front, ahead of everyday checks.'),
+            fact('lock', 'One job, one runner', 'Each job is handed to exactly one runner, so nothing ever starts twice.'))),
+        flLink(),
+        el('div', { class: 'router' }, el('span', { class: 'step', text: 3 }), 'The router picks one lane for each job'),
+        flBranch(true),
+        flLink('one of these three', 'm'),
+        el('div', { class: 'fl-lanes' },
+          laneCard('fast', 'Fast lane', '< 1 s', 'to start', 'For small checks that finish in seconds. Each one runs in a locked-down container.',
+            workers && fast, (w) => `${room(w)}.${held(w)}`, q ? 'No runner has the fast lane on right now.' : 'Any runner with the fast lane switched on.'),
+          laneCard('vm', 'Local full VMs', q ? `${n1(local.reduce((sum, w) => sum + (w.free_cpus || 0), 0))} CPUs` : 'Full VM',
+            q ? `free on ${plural(local.length, 'runner')} right now` : 'one for every job, on your own hardware',
+            'Each job gets its own full virtual machine, on machines you already own.',
+            workers && local, (w) => `${room(w)}.${w.primary_local ? ' First pick.' : ''}${held(w)}`, q ? 'No local runner is online right now.' : 'Your own machines, picked first.'),
+          laneCard('cloud', 'Cloud overflow', q && cloud.length ? String(cloud.reduce((sum, w) => sum + (w.boat_day_left || 0), 0)) : 'Standby',
+            q && cloud.length ? 'cloud starts left today' : 'used only when it is needed',
+            'When the local runners are full or paused, heavy jobs spill over to rented cloud machines.',
+            workers && cloud, (w) => `${w.max_concurrent ? `${w.running_jobs || 0} of ${w.max_concurrent} machines in use` : plural(w.running_jobs || 0, 'job')}.${w.boat_hour_left != null ? ` ${w.boat_hour_left} starts left this hour.` : ''}`,
+            q ? 'No cloud runner is online right now.' : 'Rented machines, for the overflow.')),
+        flBranch(false),
+        flLink('whichever lane it takes', 'm'),
+        el('div', { class: 'card' }, stepHead(4, 'Every job follows the same safe steps', machine
+          ? 'A job only moves forward when the step before it is confirmed. These are the live counts. Pick a state to see where a job can go from there.'
+          : 'Whichever lane it took, a job only moves forward when the step before it is confirmed.'),
+          machine ? machine.node : el('ol', { class: 'life' }, life('', 'Queued', 'Waiting in the line.'), life('', 'Claimed', 'Locked to one runner.'),
+            life('', 'Starting', 'Its VM or container boots.'), life('is-run', 'Running', 'Confirmed on GitHub.'), life('is-end', 'Finished', 'Done, failed or cancelled.')),
+          el('p', { class: 'net' }, icon('spin'), el('span', {}, el('b', { text: 'Safety net. ' }), 'If a runner reboots or a job gets stuck, the queue notices and recovers the job by itself.')))),
+    ];
+    keepFocus(view, () => view.replaceChildren(...kids));
+    if (smWatch) { smWatch.disconnect(); smWatch.draw = machine ? machine.draw : null; if (machine) smWatch.observe(machine.box); }
+    if (machine) machine.draw();
+    flowSig = sig;
+  }
+
+  function renderDashboard() {
+    if (!tabChosen) { const t = defaultTab(); if (t && t !== tab) showTab(t); }
+    renderTop();
+    if (tab === 'ci') renderCi();
+    else if (tab === 'flow') renderFlow();
+    freshness();
   }
 
   function render() {
     hideTip();
-    if (!status) {
-      app.replaceChildren(problem
-        ? el('div', { class: 'problem' }, el('b', { text: "Can't reach the Lanes hub" }),
-            `Nothing answers at ${location.host}. Is \`lanes hub\` running, and the tunnel to it up?`)
-        : el('div', { class: 'problem', text: 'Loading…' }));
-      reportHeight();
-      return;
-    }
-    names = status.machines.map((m) => m.name);
-    const now = Date.now() / 1000;
-    if (host) {
-      renderCompact(now);
-      freshness();
-      reportHeight();
-      return;
-    }
-    const all = intervals(now);
-    const legend = el('div', { class: 'legend' }, ...names.map((m) => el('span', { class: 'key' }, el('span', { class: 'dot', style: { background: color(m) } }), m)));
-    const label = el('div', { class: 'hero-label' }, `job${status.running === 1 ? '' : 's'} running`);
-    if (status.starting) label.append(el('div', {}, el('b', { text: status.starting }), ' starting'));
-    app.replaceChildren(
-      el('div', { class: 'head' }, el('div', { class: 'hero', text: status.running }), label, legend),
-      el('div', { class: 'fresh' }),
-      ...[heatBanner()].filter(Boolean),
-      el('section', {}, el('h2', {}, 'Jobs at once', el('span', { class: 'aside', text: 'last 6 hours' })), concurrency(now, all)),
-      el('section', {}, el('h2', {}, 'Machines', el('span', { class: 'aside', text: 'whole machine, CI or not · lines: last 2 hours' })), machineRows()),
-      el('section', {}, el('h2', {}, 'Running now'), runningList(now)),
-      el('section', {}, el('h2', {}, 'Last hour', el('span', { class: 'aside', text: 'bright: running · faded: passed · red: failed' })), timeline(now, all)),
-      el('section', {}, el('h2', {}, 'Finished', el('span', { class: 'aside', text: 'last 6 hours, oldest first' })), results()),
-    );
+    if (status) names = status.machines.map((m) => m.name);
+    if (!host) { renderDashboard(); return; }
+    if (!status) app.replaceChildren(hubProblem());
+    else renderCompact(Date.now() / 1000);
     freshness();
     reportHeight();
   }
@@ -813,8 +2237,11 @@
     render();
   }
 
-  // Esc or Ctrl+Shift+C asks the host (menu bar panel or T3 card) to close.
+  // Esc closes the screenshot viewer when it is open. Otherwise Esc or Ctrl+Shift+C asks the host (menu bar panel or
+  // T3 card) to close.
   addEventListener('keydown', (ev) => {
+    if (lb) { lightboxKey(ev); return; }
+    if (!host && !window.webkit?.messageHandlers?.lanes) return;
     const toggle = ev.ctrlKey && ev.shiftKey && !ev.metaKey && !ev.altKey && ev.code === 'KeyC';
     if (ev.key !== 'Escape' && !toggle) return;
     ev.preventDefault();
@@ -823,6 +2250,14 @@
   });
   let resizeTimer;
   addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 80); });
+  if (!host) {
+    buildShell();
+    if (hashTab()) { tabChosen = true; showTab(hashTab()); }
+    addEventListener('hashchange', () => { const t = hashTab(); if (t && t !== tab) { tabChosen = true; showTab(t); render(); } });
+    refreshPrs();
+    setInterval(refreshPrs, 30000);
+    setInterval(tickTimes, 15000);
+  }
   refresh();
   setInterval(refresh, 5000);
   setInterval(freshness, 1000);
