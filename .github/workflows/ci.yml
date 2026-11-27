@@ -70,6 +70,7 @@ jobs:
           python-version: "3.12"
       # Fast checks first so a typo fails in seconds.
       - run: python -m py_compile server/lanes
+      - run: bash -n app/build.sh app/assemble.sh app/release.sh app/test.sh
       - run: python -m unittest discover -s tests -v
 
   test-quality:
