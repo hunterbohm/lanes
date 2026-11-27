@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Builds Lanes.app into ~/Applications (macOS 13+, Xcode command line tools).
-#   ./build.sh                    build only
+#   ./build.sh                    build only (signed ad hoc, so it never checks for updates; downloads of a signed
+#                                 release are on the GitHub releases page)
+#   ./build.sh --agents-only      skip the build and set up the login item / tunnel for the Lanes.app already in
+#                                 ~/Applications (a downloaded release). Takes the same --install and --tunnel.
 #   ./build.sh --install          also start Lanes at login (a LaunchAgent) and start it now
 #   ./build.sh --install --tunnel HOST
 #                                 also keep an SSH tunnel to HOST, where `lanes hub` runs, so the app's default address
@@ -8,10 +11,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-install=0 tunnel=""
+install=0 tunnel="" build=1
 while (($#)); do
   case $1 in
     --install) install=1 ;;
+    --agents-only) install=1 build=0 ;;
     --tunnel) tunnel=${2:?--tunnel needs a host}; shift
               [[ $tunnel =~ ^[A-Za-z0-9._@:-]+$ && $tunnel != -* ]] || { echo "--tunnel: give a host name, user@host or ~/.ssh/config name" >&2; exit 2; } ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
@@ -23,44 +27,14 @@ app="$HOME/Applications/Lanes.app"
 agents="$HOME/Library/LaunchAgents"
 id=io.github.hunterbohm.lanes
 
-rm -rf build && mkdir -p build/AppIcon.iconset
-swiftc -O -o build/Lanes Sources/main.swift -framework Cocoa -framework WebKit
-swift make-icon.swift build/icon-master.png >/dev/null
-for size in 16 32 128 256 512; do
-  sips -z $size $size build/icon-master.png --out "build/AppIcon.iconset/icon_${size}x${size}.png" >/dev/null
-  sips -z $((size * 2)) $((size * 2)) build/icon-master.png --out "build/AppIcon.iconset/icon_${size}x${size}@2x.png" >/dev/null
-done
-iconutil -c icns build/AppIcon.iconset -o build/AppIcon.icns
-
-rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp build/Lanes "$app/Contents/MacOS/"
-cp build/AppIcon.icns "$app/Contents/Resources/"
-cat > "$app/Contents/Info.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleIdentifier</key><string>$id</string>
-  <key>CFBundleName</key><string>Lanes</string>
-  <key>CFBundleDisplayName</key><string>Lanes</string>
-  <key>CFBundleExecutable</key><string>Lanes</string>
-  <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>LSUIElement</key><true/>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
-  <key>CFBundleURLTypes</key><array><dict>
-    <key>CFBundleURLName</key><string>$id</string>
-    <key>CFBundleURLSchemes</key><array><string>lanes</string></array>
-  </dict></array>
-  <!-- The hub speaks plain HTTP: on 127.0.0.1 through a tunnel, or at an address you set on your own network. -->
-  <key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict>
-</dict></plist>
-EOF
-codesign --force --sign - "$app"
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
-echo "built $app"
+if ((build)); then
+  ./assemble.sh "$app"
+  codesign --force --sign - "$app"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
+  echo "built $app"
+else
+  [[ -d $app ]] || { echo "No $app. Move the downloaded Lanes.app there first." >&2; exit 1; }
+fi
 
 ((install)) || exit 0
 

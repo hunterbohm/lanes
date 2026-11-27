@@ -66,6 +66,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
     var pageFailed = false
     var closedAt = Date.distantPast
     var outsideClicks: Any?
+    // Updates: only a signed, downloaded copy has a channel; a source build never checks.
+    let channel = UpdateChannel(info: Bundle.main.infoDictionary, app: Bundle.main.bundleURL)
+    var available: Release?
+    var updating = false
 
     // Registered before launch finishes, so the lanes:// link that launched the app isn't lost.
     func applicationWillFinishLaunching(_ note: Notification) {
@@ -115,6 +119,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
         draw()
         fetch()
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.fetch() }
+        if channel != nil {
+            checkForUpdate(manual: false)
+            Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkForUpdate(manual: false) }
+        }
     }
 
     func loadPage() {
@@ -156,11 +164,15 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
                 .foregroundColor: NSColor.systemRed]))
         }
+        if available != nil {
+            title.append(NSAttributedString(string: " ↑", attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold), .foregroundColor: NSColor.controlAccentColor]))
+        }
         button.attributedTitle = title
         let perMachine = zip(machines.map(\.name), counts).map { "\($0) \($1)" }.joined(separator: ", ")
         let heat = hot.map { "\n\($0.name) is running hot: \($0.hot!)" }.joined()
         button.toolTip = !reachable ? "Lanes: can't reach \(server.absoluteString)"
-            : "\(running) CI job\(running == 1 ? "" : "s") running\(perMachine.isEmpty ? "" : " (\(perMachine))")\(failed ? "\nA job failed in the last 30 minutes" : "")\(heat)"
+            : "\(running) CI job\(running == 1 ? "" : "s") running\(perMachine.isEmpty ? "" : " (\(perMachine))")\(failed ? "\nA job failed in the last 30 minutes" : "")\(heat)\(available.map { "\nLanes \($0.version.text) is available: right-click to install" } ?? "")"
     }
 
     // MARK: clicks
@@ -172,9 +184,16 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
 
     func showMenu() {
         let menu = NSMenu()
+        if let available {
+            menu.addItem(withTitle: "Update to Lanes \(available.version.text)…", action: #selector(installUpdate), keyEquivalent: "").target = self
+            menu.addItem(.separator())
+        }
         menu.addItem(withTitle: "Refresh", action: #selector(refresh), keyEquivalent: "r").target = self
         menu.addItem(withTitle: "Open in Browser", action: #selector(openInBrowser), keyEquivalent: "o").target = self
         menu.addItem(withTitle: "Server Address…", action: #selector(askServer), keyEquivalent: ",").target = self
+        if channel != nil && available == nil {
+            menu.addItem(withTitle: "Check for Updates…", action: #selector(checkNow), keyEquivalent: "").target = self
+        }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Lanes", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         item.menu = menu
@@ -261,6 +280,61 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
         guard alert.runModal() == .alertFirstButtonReturn, URL(string: field.stringValue)?.scheme?.hasPrefix("http") == true else { return }
         UserDefaults.standard.set(field.stringValue, forKey: "server")
         refresh()
+    }
+
+    // MARK: updates
+
+    /// Asks GitHub for a newer release, at most once a day unless `manual`. The ask is counted even when it fails.
+    func checkForUpdate(manual: Bool) {
+        guard let channel else { return }
+        let last = UserDefaults.standard.double(forKey: "updateCheckedAt")
+        guard manual || Date().timeIntervalSince1970 - last >= Updater.checkInterval else { return }
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "updateCheckedAt")
+        Task { @MainActor in
+            self.available = await Updater.check(channel)
+            self.draw()
+            if manual { self.available == nil ? self.say("Lanes \(channel.current.text) is up to date.") : self.installUpdate() }
+        }
+    }
+
+    @objc func checkNow() { checkForUpdate(manual: true) }
+
+    @objc func installUpdate() {
+        guard let channel, let release = available, !updating else { return }
+        let alert = NSAlert()
+        alert.messageText = "Update to Lanes \(release.version.text)?"
+        alert.informativeText = "Lanes downloads it, checks that the same developer signed it and Apple notarized it, then restarts."
+        alert.addButton(withTitle: "Update")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        updating = true
+        item.button?.toolTip = "Updating Lanes…"
+        Task { @MainActor in
+            defer { self.updating = false }
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("lanes-update-\(UUID().uuidString)")
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let app = try await Updater.download(release, channel: channel, into: folder)
+                try Updater.install(app, over: channel.app)
+                try? FileManager.default.removeItem(at: folder)
+                // LaunchServices starts the new copy on its own, so it outlives this one even under launchd.
+                _ = await runCommand("/usr/bin/open", ["-n", channel.app.path], timeout: 30)
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                NSApp.terminate(nil)
+            } catch {
+                try? FileManager.default.removeItem(at: folder)
+                self.say("Couldn't update Lanes", "\(error)\n\nThe installed copy was not changed.")
+            }
+        }
+    }
+
+    func say(_ title: String, _ detail: String = "") {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     // MARK: the page
