@@ -9,7 +9,12 @@ id=io.github.hunterbohm.lanes
 
 rm -rf build/AppIcon.iconset build/Lanes build/icon-master.png build/AppIcon.icns
 mkdir -p build/AppIcon.iconset
-swiftc -O -o build/Lanes Sources/main.swift Sources/Update.swift -framework Cocoa -framework WebKit
+# Both Mac architectures, for macOS 13 and later, whatever Mac builds it.
+for arch in arm64 x86_64; do
+  swiftc -O -target "$arch-apple-macos13.0" -o "build/Lanes-$arch" Sources/main.swift Sources/Update.swift -framework Cocoa -framework WebKit
+done
+lipo -create build/Lanes-arm64 build/Lanes-x86_64 -output build/Lanes
+rm -f build/Lanes-arm64 build/Lanes-x86_64
 swift make-icon.swift build/icon-master.png >/dev/null
 for size in 16 32 128 256 512; do
   sips -z $size $size build/icon-master.png --out "build/AppIcon.iconset/icon_${size}x${size}.png" >/dev/null
