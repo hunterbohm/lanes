@@ -50,7 +50,7 @@ six hours went.
   It serves the panel page and the merged data.
 - The Mac app shows that page in a panel and draws the glyph from the same data.
 
-The server is one Python file (3.11+, standard library only). The app is one Swift file.
+The server is one Python file (3.11+, standard library only). The app is two Swift files: the menu bar app and its update check.
 
 ## Set up
 
@@ -76,7 +76,23 @@ If you already keep a list of your machines somewhere (an inventory file, Ansibl
 `machines_command` in `hub.toml` to a command that prints them as `{"machines": [{"name": …, "ssh": …}]}`. The hub
 re-runs it every minute, so a new machine shows up without editing `hub.toml`.
 
-**3. Your Mac** (macOS 13+, Xcode command line tools):
+**3. Your Mac** (macOS 13+). Either download the app, or build it.
+
+*Download (signed and notarized by Apple, no Xcode needed):* get `Lanes-vX.Y.Z.zip` from the
+[latest release](https://github.com/hunterbohm/lanes/releases/latest), unzip it, move `Lanes.app` to
+`~/Applications`, and open it. Right-click the glyph, choose **Server Address…**, and enter the hub's address. To
+start Lanes at login and keep an SSH tunnel to the hub, also clone this repo and run:
+
+```sh
+git clone https://github.com/hunterbohm/lanes && lanes/app/build.sh --agents-only --tunnel HUB
+```
+
+A downloaded copy checks GitHub about once a day. When a newer release is out, the glyph shows ↑ and the
+right-click menu offers **Update to Lanes X.Y.Z…**. It installs the update only if the download is signed by the
+same Apple developer team as the running app and macOS accepts it as notarized; otherwise it changes nothing and
+tells you why. **Check for Updates…** asks right away.
+
+*Build it yourself (Xcode command line tools):*
 
 ```sh
 git clone https://github.com/hunterbohm/lanes && lanes/app/build.sh --install --tunnel HUB
@@ -84,8 +100,9 @@ git clone https://github.com/hunterbohm/lanes && lanes/app/build.sh --install --
 
 This builds `~/Applications/Lanes.app`, starts it at login, and keeps an SSH tunnel to `HUB` (anything `ssh HUB`
 accepts), so the app's default address `http://127.0.0.1:8792/` reaches the hub. If the Mac can reach the hub
-directly instead (say, over a VPN with `listen` set), skip `--tunnel`. Then right-click the glyph, choose **Server
-Address…**, and enter the hub's address.
+directly instead (say, over a VPN with `listen` set), skip `--tunnel`, then right-click the glyph, choose **Server
+Address…**, and enter the hub's address. A copy you built has no developer team behind it, so it never checks for
+updates: pull and run `build.sh` again.
 
 ### Try it without a fleet
 
@@ -96,7 +113,7 @@ python3 lanes/server/lanes demo        # made-up machines and jobs on http://127
 ## Using it
 
 - **Click the glyph** to open the panel. Esc or a click outside closes it.
-- **Right-click** for Refresh, Open in Browser, Server Address… and Quit.
+- **Right-click** for Refresh, Open in Browser, Server Address…, Check for Updates… (downloaded copies) and Quit.
 - **`open lanes://toggle`** (or `lanes://show`, `lanes://hide`) opens and closes it from a hotkey tool. A
   click from a custom bar that presses menu bar items through Accessibility, with the macOS menu bar hidden, opens
   the panel under the pointer.
@@ -147,6 +164,8 @@ Only `http(s)` links are kept.
   It then leaves the background to its host and posts `{type: "lanes-height", height}` and
   `{type: "lanes-close"}` (on Esc) to the parent window.
 - The app allows plain-HTTP loads because the hub speaks plain HTTP. Nothing else is loaded.
+
+Releases are built by `app/release.sh`; see [RELEASING.md](RELEASING.md).
 
 ## License
 
